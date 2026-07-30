@@ -47,7 +47,7 @@ Allow filtering using:
 * From date/time
 * To date/time
 
-Use FHIR `_created` search parameters whenever possible.
+Use FHIR `_lastUpdated` search parameters whenever possible.
 
 ---
 
