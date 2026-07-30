@@ -123,6 +123,8 @@ export async function listIncompleteCheckpoints(): Promise<CheckpointSummary[]> 
           targetUrl: cp.targetUrl,
           completedResourceTypes: cp.completedResourceTypes,
           totalMappings: Object.keys(cp.idMappings).length,
+          dateFrom: cp.dateFrom,
+          dateTo: cp.dateTo,
         });
       } catch {
         // Skip corrupted files
@@ -162,6 +164,8 @@ export function createCheckpoint(
   targetUrl: string,
   selectedResourceTypes: FhirResourceType[],
   userDefinedMappings: Record<string, string> = {},
+  dateFrom?: string,
+  dateTo?: string,
 ): MigrationCheckpoint {
   return {
     version: 2,
@@ -174,6 +178,8 @@ export function createCheckpoint(
     patientLinkPatched: false,
     compositionRelatesToPatched: false,
     idMappings: { ...userDefinedMappings },
+    dateFrom,
+    dateTo,
   };
 }
 

@@ -45,8 +45,8 @@ export async function scanCleanupResources(options: ScanOptions): Promise<Record
       `_count=250`,
       // `initiator-component=${initiatorComponent}`
     ];
-    if (dateFrom) queryParts.push(`_created=ge${dateFrom}`);
-    if (dateTo) queryParts.push(`_created=le${dateTo}`);
+    if (dateFrom) queryParts.push(`_lastUpdated=ge${dateFrom}`);
+    if (dateTo) queryParts.push(`_lastUpdated=le${dateTo}`);
     const path = `/${rt}?${queryParts.join('&')}`;
 
     try {

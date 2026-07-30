@@ -14,6 +14,8 @@ export type ScanResult = Partial<Record<FhirResourceType, number>>;
  * Scans the source server for resource counts.
  * @param config Source server configuration
  * @param resourceTypes Resource types to scan
+ * @param dateFrom Optional start date for _lastUpdated range (inclusive, ISO date)
+ * @param dateTo Optional end date for _lastUpdated range (inclusive, ISO date)
  * @returns Record of resourceType → count
  */
 export async function scanResourceCounts(
@@ -21,6 +23,8 @@ export async function scanResourceCounts(
   resourceTypes: FhirResourceType[],
   onProgress?: (resourceType: FhirResourceType, count: number) => void,
   shouldContinue?: () => Promise<boolean> | boolean,
+  dateFrom?: string,
+  dateTo?: string,
 ): Promise<ScanResult> {
   const result: ScanResult = {};
 
@@ -34,9 +38,13 @@ export async function scanResourceCounts(
     }
 
     try {
-      const bundle = await fhirClient.search(config, resourceType, {
-        _summary: 'count',
-      });
+      const params: Record<string, string | string[]> = { _summary: 'count' };
+      const lastUpdated: string[] = [];
+      if (dateFrom) lastUpdated.push(`ge${dateFrom}`);
+      if (dateTo) lastUpdated.push(`le${dateTo}`);
+      if (lastUpdated.length > 0) params['_lastUpdated'] = lastUpdated;
+
+      const bundle = await fhirClient.search(config, resourceType, params);
       const count = bundle.total ?? 0;
       result[resourceType] = count;
       

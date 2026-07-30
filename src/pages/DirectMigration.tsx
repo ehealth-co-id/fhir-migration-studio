@@ -9,6 +9,8 @@ import {
   ChevronRight,
   RotateCcw,
   Trash2,
+  Search,
+  Loader2,
 } from 'lucide-react';
 import { Topbar } from '../components/layout/Topbar';
 import { Button } from '../components/ui/Button';
@@ -21,6 +23,8 @@ import { useMigrationStore } from '../store/migrationStore';
 import { useMappingStore } from '../store/mappingStore';
 import { runDirectMigration, resumeDirectMigration } from '../services/migrationOrchestrator';
 import { listIncompleteCheckpoints, deleteCheckpoint } from '../services/checkpointService';
+import { detectPatientMappings, type PatientDetectionResult } from '../services/patientDetector';
+import { savePersistentMappings } from '../services/persistentMappingStore';
 import { MIGRATABLE_RESOURCE_TYPES, type FhirResourceType } from '../types/fhir';
 import { computeOverallProgress, type CheckpointSummary } from '../types/migration';
 import { generateReport, formatReportText } from '../services/reporter';
@@ -45,6 +49,11 @@ export function DirectMigration() {
   );
   const [running, setRunning] = useState(false);
   const [incompleteCheckpoints, setIncompleteCheckpoints] = useState<CheckpointSummary[]>([]);
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [detecting, setDetecting] = useState(false);
+  const [detectionResult, setDetectionResult] = useState<PatientDetectionResult | null>(null);
+  const [detectionError, setDetectionError] = useState('');
   void running;
 
   // Load any incomplete checkpoints on mount
@@ -105,12 +114,52 @@ export function DirectMigration() {
         target,
         resourceTypes: Array.from(selected),
         mappingRules: rules,
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
       });
     } finally {
       setRunning(false);
       setStep('done');
     }
-  }, [source, target, selected, rules]);
+  }, [source, target, selected, rules, dateFrom, dateTo]);
+
+  const handleDetectPatients = useCallback(async () => {
+    if (!source.baseUrl || !target.baseUrl) return;
+    setDetecting(true);
+    setDetectionError('');
+    setDetectionResult(null);
+    try {
+      const result = await detectPatientMappings({
+        source,
+        target,
+        onProgress: (matched, scanned) => {
+          // Update result in-place for live feedback
+          setDetectionResult((prev) => ({
+            ...(prev ?? { totalScanned: 0, matched: 0, notFound: 0, skipped: 0, mappings: {} }),
+            totalScanned: scanned,
+            matched,
+          }));
+        },
+        shouldContinue: () => true,
+      });
+
+      // Save detected mappings to persistent store
+      if (Object.keys(result.mappings).length > 0) {
+        await savePersistentMappings(source.baseUrl, target.baseUrl, result.mappings);
+      }
+
+      setDetectionResult(result);
+    } catch (err) {
+      setDetectionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDetecting(false);
+    }
+  }, [source, target]);
+
+  const handleClearDetection = () => {
+    setDetectionResult(null);
+    setDetectionError('');
+  };
 
   const handleResume = useCallback(async (jobId: string) => {
     setRunning(true);
@@ -315,6 +364,113 @@ export function DirectMigration() {
                 </label>
               ))}
             </div>
+          </Card>
+
+          {/* Date Range Filter */}
+          <Card title="Date Range Filter (Optional)">
+            <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 12 }}>
+              Only migrate resources whose <code>_lastUpdated</code> falls within the selected date range.
+              Leave both fields empty to migrate all resources regardless of date.
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 4, color: 'var(--color-text)' }}>
+                  From Date
+                </label>
+                <input
+                  type="date"
+                  value={dateFrom}
+                  onChange={(e) => setDateFrom(e.target.value)}
+                  className="input"
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 4, color: 'var(--color-text)' }}>
+                  To Date
+                </label>
+                <input
+                  type="date"
+                  value={dateTo}
+                  onChange={(e) => setDateTo(e.target.value)}
+                  className="input"
+                  style={{ width: '100%' }}
+                />
+              </div>
+            </div>
+            {(dateFrom || dateTo) && (
+              <div style={{ marginTop: 8, fontSize: 11, color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                <CheckCircle2 size={12} style={{ color: 'var(--color-success)' }} />
+                Filtering by _lastUpdated{dateFrom ? ` ≥ ${dateFrom}` : ''}{dateFrom && dateTo ? ' and' : ''}{dateTo ? ` ≤ ${dateTo}` : ''}
+              </div>
+            )}
+          </Card>
+
+          {/* Auto-detect Existing Patients */}
+          <Card title="Auto-Detect Existing Patient Mappings">
+            <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 12 }}>
+              Match Patients between source and target servers by NIK identifier.
+              This builds <code>Patient/{'{sourceId}'} → Patient/{'{targetId}'}</code> mappings so that
+              references from new resources (Encounter, Observation, etc.) can be
+              correctly rewritten even if the Patient was migrated in a previous run.
+            </div>
+
+            {!detecting && !detectionResult && !detectionError && (
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={<Search size={14} />}
+                disabled={!source.baseUrl || !target.baseUrl}
+                onClick={handleDetectPatients}
+              >
+                Detect Existing Patients
+              </Button>
+            )}
+
+            {detecting && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, color: 'var(--color-text-muted)' }}>
+                <Loader2 size={16} className="spinner" />
+                <span>
+                  Scanning Patients...{' '}
+                  {detectionResult && (
+                    <span style={{ color: 'var(--color-text)' }}>
+                      {detectionResult.totalScanned} scanned, {detectionResult.matched} matched
+                    </span>
+                  )}
+                </span>
+              </div>
+            )}
+
+            {detectionError && (
+              <div className="alert alert-error" style={{ marginTop: 8 }}>
+                <XCircle size={16} />
+                <span>{detectionError}</span>
+                <Button variant="secondary" size="sm" onClick={handleClearDetection}>Dismiss</Button>
+              </div>
+            )}
+
+            {detectionResult && !detecting && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div className="alert alert-success">
+                  <CheckCircle2 size={16} />
+                  <span>
+                    Detection complete:{' '}
+                    <strong>{detectionResult.matched}</strong> Patients matched,{' '}
+                    <strong>{detectionResult.notFound}</strong> not found,{' '}
+                    <strong>{detectionResult.skipped}</strong> skipped{' '}
+                    (scanned {detectionResult.totalScanned} total)
+                  </span>
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <Button variant="secondary" size="sm" onClick={handleDetectPatients}>
+                    Re-run Detection
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={handleClearDetection}>
+                    Clear
+                  </Button>
+                </div>
+              </div>
+            )}
           </Card>
 
           {/* Mapping rules summary */}

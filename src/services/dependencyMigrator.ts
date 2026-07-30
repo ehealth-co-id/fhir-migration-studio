@@ -76,6 +76,10 @@ export interface DependencyMigratorOptions {
    * requests, no downloads.
    */
   selectedResourceTypes: FhirResourceType[];
+  /** Optional start date for _lastUpdated range (inclusive, ISO date string). */
+  dateFrom?: string;
+  /** Optional end date for _lastUpdated range (inclusive, ISO date string). */
+  dateTo?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -104,6 +108,8 @@ export async function runDependencyMigration(
     bundleSize = DEFAULT_BUNDLE_SIZE,
     jobId,
     selectedResourceTypes,
+    dateFrom,
+    dateTo,
   } = options;
 
   // Sort selected types by dependency order
@@ -130,12 +136,12 @@ export async function runDependencyMigration(
 
       // Still need patient resources for the link.other step — download but don't upload
       if (resourceType === 'Patient' && !checkpoint.patientLinkPatched) {
-        patientResources = await downloadAllResources(source, resourceType, jobId);
+        patientResources = await downloadAllResources(source, resourceType, jobId, undefined, dateFrom, dateTo);
       }
 
       // Still need Composition resources for the relatesTo step — download but don't upload
       if (resourceType === 'Composition' && !checkpoint.compositionRelatesToPatched) {
-        compositionResources = await downloadAllResources(source, resourceType, jobId);
+        compositionResources = await downloadAllResources(source, resourceType, jobId, undefined, dateFrom, dateTo);
       }
 
       continue;
@@ -151,7 +157,7 @@ export async function runDependencyMigration(
     // Download all resources of this type
     const resources = await downloadAllResources(source, resourceType, jobId, (downloaded, total) => {
       useMigrationStore.getState().updateResourceProgress(resourceType, { total, downloaded });
-    });
+    }, dateFrom, dateTo);
 
     if (!(await checkStatus())) return checkpoint;
 
@@ -272,6 +278,8 @@ async function downloadAllResources(
   resourceType: FhirResourceType,
   jobId: string,
   onProgress?: (downloaded: number, total: number) => void,
+  dateFrom?: string,
+  dateTo?: string,
 ): Promise<FhirResource[]> {
   const resources: FhirResource[] = [];
   await downloadResourceType(source, resourceType, {
@@ -283,7 +291,7 @@ async function downloadAllResources(
       const s = useMigrationStore.getState().current?.status;
       return s !== 'cancelled' && s !== 'paused';
     },
-  });
+  }, dateFrom, dateTo);
   void jobId; // used by caller for context; kept for future structured logging
   return resources;
 }
