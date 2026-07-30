@@ -26,6 +26,7 @@
 import { scanResourceCounts } from './scanner';
 import { ResourceMappingService } from './resourceMappingService';
 import { runDependencyMigration, DEFAULT_BUNDLE_SIZE } from './dependencyMigrator';
+import { loadPersistentMappings, savePersistentMappings } from './persistentMappingStore';
 import {
   createCheckpoint,
   loadCheckpoint,
@@ -207,6 +208,9 @@ async function _runMigration(args: RunMigrationArgs): Promise<void> {
   let checkpoint = initialCheckpoint;
   const onCheckpoint = (updated: MigrationCheckpoint) => { checkpoint = updated; };
 
+  // Declared here so it's accessible in both try and catch blocks
+  const mappingService = new ResourceMappingService();
+
   try {
     // Initialize progress entries for all selected resource types
     for (const rt of selectedResourceTypes) {
@@ -255,14 +259,36 @@ async function _runMigration(args: RunMigrationArgs): Promise<void> {
     // -------------------------------------------------------------------------
     // Restore ResourceMappingService from checkpoint
     // -------------------------------------------------------------------------
-    const mappingService = new ResourceMappingService();
     for (const [oldRef, newRef] of Object.entries(checkpoint.idMappings)) {
       mappingService.set(oldRef, newRef);
     }
 
+    // -------------------------------------------------------------------------
+    // Load persistent mappings from previous migrations for this server pair
+    // -------------------------------------------------------------------------
+    const persistentMappings = await loadPersistentMappings(
+      source.baseUrl,
+      target.baseUrl,
+    );
+    let persistentMappingsLoaded = 0;
+    for (const [oldRef, newRef] of Object.entries(persistentMappings)) {
+      if (!mappingService.has(oldRef)) {
+        mappingService.set(oldRef, newRef);
+        persistentMappingsLoaded++;
+      }
+    }
+
+    if (persistentMappingsLoaded > 0) {
+      log({
+        level: 'info',
+        message: `Loaded ${persistentMappingsLoaded} persistent mappings from previous migrations (${Object.keys(persistentMappings).length} total available, ${Object.keys(checkpoint.idMappings).length} already in checkpoint)`,
+        jobId: job.id,
+      });
+    }
+
     log({
       level: 'info',
-      message: `Restored ${mappingService.size} ID mappings from checkpoint`,
+      message: `Restored ${mappingService.size} ID mappings from checkpoint + persistent store`,
       jobId: job.id,
     });
 
@@ -295,6 +321,18 @@ async function _runMigration(args: RunMigrationArgs): Promise<void> {
       jobId: job.id,
     });
 
+    // Save all mappings to persistent store for future migrations
+    const allMappings: Record<string, string> = {};
+    for (const [key, value] of mappingService.getMap()) {
+      allMappings[key] = value;
+    }
+    await savePersistentMappings(source.baseUrl, target.baseUrl, allMappings);
+    log({
+      level: 'info',
+      message: `Saved ${Object.keys(allMappings).length} mappings to persistent store`,
+      jobId: job.id,
+    });
+
     // -------------------------------------------------------------------------
     // Complete — mark checkpoint as done and delete from disk
     // -------------------------------------------------------------------------
@@ -311,6 +349,16 @@ async function _runMigration(args: RunMigrationArgs): Promise<void> {
     const msg = err instanceof Error ? err.message : String(err);
     store.setError(msg);
     // Checkpoint is intentionally NOT deleted on error — kept for resume
+    // Also save whatever mappings we have to persistent store so partial progress isn't lost
+    try {
+      const allMappings: Record<string, string> = {};
+      for (const [key, value] of mappingService.getMap()) {
+        allMappings[key] = value;
+      }
+      await savePersistentMappings(source.baseUrl, target.baseUrl, allMappings);
+    } catch {
+      // Non-fatal — persistent store save failure should not affect the migration
+    }
     log({
       level: 'error',
       message: `Migration ${job.id} failed: ${msg} (checkpoint preserved for resume)`,
