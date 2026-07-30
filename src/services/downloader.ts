@@ -28,16 +28,25 @@ export async function downloadResourceType(
   config: ServerConfig,
   resourceType: FhirResourceType,
   options: DownloadOptions,
+  dateFrom?: string,
+  dateTo?: string,
 ): Promise<FhirResource[]> {
   const all: FhirResource[] = [];
   let pageNum = 0;
 
   log({ level: 'info', message: `Starting download: ${resourceType}`, resourceType });
 
-  // First page
-  let bundle = await fhirClient.search(config, resourceType, {
+  // Build search params including optional date range
+  const searchParams: Record<string, string | string[]> = {
     _count: String(PAGE_SIZE),
-  });
+  };
+  const lastUpdated: string[] = [];
+  if (dateFrom) lastUpdated.push(`ge${dateFrom}`);
+  if (dateTo) lastUpdated.push(`le${dateTo}`);
+  if (lastUpdated.length > 0) searchParams['_lastUpdated'] = lastUpdated;
+
+  // First page
+  let bundle = await fhirClient.search(config, resourceType, searchParams);
 
   const total = bundle.total ?? 0;
 

@@ -45,6 +45,8 @@ export function DirectMigration() {
   );
   const [running, setRunning] = useState(false);
   const [incompleteCheckpoints, setIncompleteCheckpoints] = useState<CheckpointSummary[]>([]);
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   void running;
 
   // Load any incomplete checkpoints on mount
@@ -105,12 +107,14 @@ export function DirectMigration() {
         target,
         resourceTypes: Array.from(selected),
         mappingRules: rules,
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
       });
     } finally {
       setRunning(false);
       setStep('done');
     }
-  }, [source, target, selected, rules]);
+  }, [source, target, selected, rules, dateFrom, dateTo]);
 
   const handleResume = useCallback(async (jobId: string) => {
     setRunning(true);
@@ -315,6 +319,46 @@ export function DirectMigration() {
                 </label>
               ))}
             </div>
+          </Card>
+
+          {/* Date Range Filter */}
+          <Card title="Date Range Filter (Optional)">
+            <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 12 }}>
+              Only migrate resources whose <code>_lastUpdated</code> falls within the selected date range.
+              Leave both fields empty to migrate all resources regardless of date.
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 4, color: 'var(--color-text)' }}>
+                  From Date
+                </label>
+                <input
+                  type="date"
+                  value={dateFrom}
+                  onChange={(e) => setDateFrom(e.target.value)}
+                  className="input"
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 4, color: 'var(--color-text)' }}>
+                  To Date
+                </label>
+                <input
+                  type="date"
+                  value={dateTo}
+                  onChange={(e) => setDateTo(e.target.value)}
+                  className="input"
+                  style={{ width: '100%' }}
+                />
+              </div>
+            </div>
+            {(dateFrom || dateTo) && (
+              <div style={{ marginTop: 8, fontSize: 11, color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                <CheckCircle2 size={12} style={{ color: 'var(--color-success)' }} />
+                Filtering by _lastUpdated{dateFrom ? ` ≥ ${dateFrom}` : ''}{dateFrom && dateTo ? ' and' : ''}{dateTo ? ` ≤ ${dateTo}` : ''}
+              </div>
+            )}
           </Card>
 
           {/* Mapping rules summary */}

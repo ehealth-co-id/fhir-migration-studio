@@ -121,13 +121,24 @@ export const fhirClient = {
   /**
    * Search a resource type with optional query params.
    * Returns the full Bundle (searchset).
+   *
+   * Values can be strings or string[] — arrays are emitted as repeated
+   * query parameters (e.g. _lastUpdated=ge2024-01-01&_lastUpdated=le2024-12-31).
    */
   async search(
     config: ServerConfig,
     resourceType: string,
-    params: Record<string, string> = {},
+    params: Record<string, string | string[]> = {},
   ): Promise<Bundle> {
-    const qs = new URLSearchParams(params).toString();
+    const sp = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (Array.isArray(value)) {
+        for (const item of value) sp.append(key, item);
+      } else {
+        sp.append(key, value);
+      }
+    }
+    const qs = sp.toString();
     const path = `/${resourceType}${qs ? `?${qs}` : ''}`;
     return fhirClient.get<Bundle>(config, path);
   },

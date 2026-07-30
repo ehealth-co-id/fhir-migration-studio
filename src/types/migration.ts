@@ -101,6 +101,10 @@ export interface MigrationCheckpoint {
    * Format: { "Patient/100": "Patient/987", "HealthcareService/6301787": "HealthcareService/105" }
    */
   idMappings: Record<string, string>;
+  /** Optional start date for _lastUpdated range (inclusive, ISO date string). */
+  dateFrom?: string;
+  /** Optional end date for _lastUpdated range (inclusive, ISO date string). */
+  dateTo?: string;
 }
 
 /** Summary shown in the UI "Resume Migration" list */
@@ -111,6 +115,8 @@ export interface CheckpointSummary {
   targetUrl: string;
   completedResourceTypes: FhirResourceType[];
   totalMappings: number;
+  dateFrom?: string;
+  dateTo?: string;
 }
 
 

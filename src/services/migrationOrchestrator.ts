@@ -77,6 +77,10 @@ export interface MigrationOptions {
    * Defaults to DEFAULT_BUNDLE_SIZE (100).
    */
   bundleSize?: number;
+  /** Optional start date for _lastUpdated range (inclusive, ISO date string). */
+  dateFrom?: string;
+  /** Optional end date for _lastUpdated range (inclusive, ISO date string). */
+  dateTo?: string;
 }
 
 /**
@@ -91,6 +95,8 @@ export async function runDirectMigration(options: MigrationOptions): Promise<voi
     resourceTypes = MIGRATABLE_RESOURCE_TYPES,
     mappingRules,
     bundleSize = DEFAULT_BUNDLE_SIZE,
+    dateFrom,
+    dateTo,
   } = options;
 
   const store = useMigrationStore.getState();
@@ -114,6 +120,8 @@ export async function runDirectMigration(options: MigrationOptions): Promise<voi
     target.baseUrl,
     resourceTypes,
     userDefinedMappings,
+    dateFrom,
+    dateTo,
   );
   await saveCheckpoint(initialCheckpoint);
 
@@ -124,6 +132,8 @@ export async function runDirectMigration(options: MigrationOptions): Promise<voi
     selectedResourceTypes: resourceTypes,
     bundleSize,
     checkpoint: initialCheckpoint,
+    dateFrom,
+    dateTo,
   });
 }
 
@@ -169,6 +179,8 @@ export async function resumeDirectMigration(
     selectedResourceTypes,
     bundleSize: DEFAULT_BUNDLE_SIZE,
     checkpoint,
+    dateFrom: checkpoint.dateFrom,
+    dateTo: checkpoint.dateTo,
   });
 }
 
@@ -183,10 +195,12 @@ interface RunMigrationArgs {
   selectedResourceTypes: FhirResourceType[];
   bundleSize: number;
   checkpoint: MigrationCheckpoint;
+  dateFrom?: string;
+  dateTo?: string;
 }
 
 async function _runMigration(args: RunMigrationArgs): Promise<void> {
-  const { job, source, target, selectedResourceTypes, bundleSize, checkpoint: initialCheckpoint } = args;
+  const { job, source, target, selectedResourceTypes, bundleSize, checkpoint: initialCheckpoint, dateFrom, dateTo } = args;
   const store = useMigrationStore.getState();
 
   // Mutable checkpoint — updated and saved after every successful batch
@@ -229,6 +243,8 @@ async function _runMigration(args: RunMigrationArgs): Promise<void> {
         useMigrationStore.getState().updateResourceProgress(rt, { total: count });
       },
       checkStatus,
+      dateFrom,
+      dateTo,
     );
 
     if (!(await checkStatus())) {
@@ -261,7 +277,7 @@ async function _runMigration(args: RunMigrationArgs): Promise<void> {
     });
 
     checkpoint = await runDependencyMigration(
-      { source, target, bundleSize, jobId: job.id, selectedResourceTypes },
+      { source, target, bundleSize, jobId: job.id, selectedResourceTypes, dateFrom, dateTo },
       mappingService,
       checkpoint,
       onCheckpoint,
