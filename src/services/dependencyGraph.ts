@@ -24,6 +24,7 @@ import type { FhirResourceType } from '../types/fhir';
  * Appointment      — references Patient, Practitioner, Slot, HealthcareService
  * Condition        — references Patient, Practitioner
  * Encounter        — references Appointment, Patient, Condition
+ * Media            — references Patient, Practitioner, Encounter
  * Observation      — references Patient, Practitioner
  * AllergyIntolerance — references Patient, Practitioner
  * Procedure        — references Patient, Practitioner
@@ -46,6 +47,7 @@ export const DEPENDENCY_ORDER: FhirResourceType[] = [
   'Appointment',
   'Condition',
   'Encounter',
+  'Media',
   'Observation',
   'AllergyIntolerance',
   'Procedure',

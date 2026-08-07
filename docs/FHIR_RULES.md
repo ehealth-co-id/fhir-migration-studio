@@ -39,6 +39,7 @@ The migration imports:
 * ProcedureRequest
 * Consent
 * AuditEvent
+* Media
 
 ---
 
@@ -89,6 +90,14 @@ References:
 * Condition
 
 One Encounter may produce one or more Compositions.
+
+## Media
+
+References:
+
+* Patient
+* Practitioner
+* Encounter
 
 ## Composition
 
@@ -170,6 +179,12 @@ Questionnaire
 
 * no references
 
+Media
+
+* references Patient
+* Practitioner
+* Encounter
+
 ---
 
 # New Migration Strategy
@@ -221,6 +236,10 @@ Condition
 ↓
 
 Encounter
+
+↓
+
+Media
 
 ↓
 
