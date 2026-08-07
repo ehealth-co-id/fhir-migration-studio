@@ -7,7 +7,8 @@
  * different migration contexts (even with the same server URLs) can maintain
  * independent mapping sets.
  *
- * File location: {AppLocalData}/persistent-mappings.json
+ * File location: {projectRoot}/data/persistent-mappings.json
+ * Stored in the project repo so it can be committed to git and shared.
  */
 
 import {
@@ -15,6 +16,7 @@ import {
   exists,
   readTextFile,
   writeTextFile,
+  mkdir,
 } from '@tauri-apps/plugin-fs';
 import { log } from '../store/logStore';
 
@@ -22,8 +24,13 @@ import { log } from '../store/logStore';
 // Constants
 // ---------------------------------------------------------------------------
 
-const FILENAME = 'persistent-mappings.json';
-const BASE_DIR = BaseDirectory.AppLocalData;
+/**
+ * Path relative to BaseDirectory.Resource (= src-tauri/ in dev mode).
+ * "../data" resolves to {projectRoot}/data/.
+ */
+const FILENAME = '../data/persistent-mappings.json';
+const DATA_DIR = '../data';
+const BASE_DIR = BaseDirectory.Resource;
 const CURRENT_VERSION = 2; // v1 → v2: key changed from URL-based to name-based
 
 // ---------------------------------------------------------------------------
@@ -67,6 +74,17 @@ function normalizeName(name: string): string {
   return name.trim();
 }
 
+async function ensureDataDir(): Promise<void> {
+  try {
+    const dirExists = await exists(DATA_DIR, { baseDir: BASE_DIR });
+    if (!dirExists) {
+      await mkdir(DATA_DIR, { baseDir: BASE_DIR, recursive: true });
+    }
+  } catch {
+    // Non-fatal — dir may exist or permissions may prevent creation
+  }
+}
+
 async function loadAll(): Promise<PersistentMappingData> {
   try {
     const fileExists = await exists(FILENAME, { baseDir: BASE_DIR });
@@ -93,6 +111,7 @@ async function loadAll(): Promise<PersistentMappingData> {
 
 async function saveAll(data: PersistentMappingData): Promise<void> {
   try {
+    await ensureDataDir();
     const json = JSON.stringify(data, null, 2);
     await writeTextFile(FILENAME, json, { baseDir: BASE_DIR });
   } catch (err) {
