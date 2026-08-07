@@ -139,7 +139,7 @@ export const fhirClient = {
       }
     }
     const qs = sp.toString();
-    const path = `/${resourceType}${qs ? `?${qs}` : ''}`;
+    const path = `/${resourceType}/${qs ? `?${qs}` : ''}`;
     return fhirClient.get<Bundle>(config, path);
   },
 
