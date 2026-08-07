@@ -3,8 +3,9 @@
  * runs so subsequent migrations can reuse previously established mappings.
  *
  * Unlike checkpoints (which are deleted on success), this store is NEVER
- * automatically deleted. It is keyed by source+target URL combination so
- * different server pairs maintain independent mapping sets.
+ * automatically deleted. It is keyed by a user-provided migration name so that
+ * different migration contexts (even with the same server URLs) can maintain
+ * independent mapping sets.
  *
  * File location: {AppLocalData}/persistent-mappings.json
  */
@@ -23,23 +24,38 @@ import { log } from '../store/logStore';
 
 const FILENAME = 'persistent-mappings.json';
 const BASE_DIR = BaseDirectory.AppLocalData;
-const CURRENT_VERSION = 1;
+const CURRENT_VERSION = 2; // v1 → v2: key changed from URL-based to name-based
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export interface PersistentMappingEntry {
+  /** User-provided migration name (e.g. "Migrasi Klinik A Premium ke A Lite") */
+  name: string;
+  /** Source FHIR server URL at time of last save (for display only) */
+  sourceUrl: string;
+  /** Target FHIR server URL at time of last save (for display only) */
+  targetUrl: string;
+  /** All known "ResourceType/id" → "ResourceType/id" mappings */
+  mappings: Record<string, string>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Summary returned for the mapping set picker UI */
+export interface PersistentMappingSummary {
+  name: string;
   sourceUrl: string;
   targetUrl: string;
-  /** All known "ResourceType/id" → "ResourceType/id" mappings for this server pair */
-  mappings: Record<string, string>;
+  mappingCount: number;
+  createdAt: string;
   updatedAt: string;
 }
 
 interface PersistentMappingData {
   version: number;
-  /** Keyed by "sourceUrl|targetUrl" */
+  /** Keyed by user-provided migration name (case-sensitive, trimmed) */
   entries: Record<string, PersistentMappingEntry>;
 }
 
@@ -47,11 +63,8 @@ interface PersistentMappingData {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-function makeKey(sourceUrl: string, targetUrl: string): string {
-  // Normalize trailing slashes for consistent keys
-  const src = sourceUrl.endsWith('/') ? sourceUrl.slice(0, -1) : sourceUrl;
-  const tgt = targetUrl.endsWith('/') ? targetUrl.slice(0, -1) : targetUrl;
-  return `${src}|${tgt}`;
+function normalizeName(name: string): string {
+  return name.trim();
 }
 
 async function loadAll(): Promise<PersistentMappingData> {
@@ -64,7 +77,6 @@ async function loadAll(): Promise<PersistentMappingData> {
     const json = await readTextFile(FILENAME, { baseDir: BASE_DIR });
     const parsed = JSON.parse(json) as PersistentMappingData;
 
-    // Version check — if incompatible, start fresh
     if (parsed.version !== CURRENT_VERSION) {
       console.warn(
         `[PersistentMappingStore] Store version ${parsed.version} is incompatible with v${CURRENT_VERSION}. Starting fresh.`,
@@ -93,43 +105,47 @@ async function saveAll(data: PersistentMappingData): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * Load all persistent mappings for a given source→target server pair.
+ * Load persistent mappings for a given migration name.
  * Returns a flat Record of "ResourceType/id" → "ResourceType/id".
  */
 export async function loadPersistentMappings(
-  sourceUrl: string,
-  targetUrl: string,
+  name: string,
 ): Promise<Record<string, string>> {
   const data = await loadAll();
-  const key = makeKey(sourceUrl, targetUrl);
+  const key = normalizeName(name);
   const entry = data.entries[key];
   if (!entry) return {};
 
   log({
     level: 'info',
-    message: `Loaded ${Object.keys(entry.mappings).length} persistent mappings for ${sourceUrl} → ${targetUrl}`,
+    message: `Loaded ${Object.keys(entry.mappings).length} persistent mappings for "${key}"`,
   });
 
   return { ...entry.mappings };
 }
 
 /**
- * Merge new mappings into the persistent store for a given server pair.
- * Existing keys are overwritten (latest mapping wins).
+ * Save (merge) new mappings into the persistent store under a migration name.
+ * Existing keys for the same name are overwritten (latest mapping wins).
  *
- * @param sourceUrl  Source FHIR server base URL
- * @param targetUrl  Target FHIR server base URL
- * @param newMappings  New "ResourceType/id" → "ResourceType/id" mappings to add
+ * @param name         User-provided migration name
+ * @param sourceUrl    Source FHIR server for metadata
+ * @param targetUrl    Target FHIR server for metadata
+ * @param newMappings  New "ResourceType/id" → "ResourceType/id" mappings to merge
  */
 export async function savePersistentMappings(
+  name: string,
   sourceUrl: string,
   targetUrl: string,
   newMappings: Record<string, string>,
 ): Promise<void> {
   if (Object.keys(newMappings).length === 0) return;
 
+  const key = normalizeName(name);
+  if (!key) return;
+
   const data = await loadAll();
-  const key = makeKey(sourceUrl, targetUrl);
+  const now = new Date().toISOString();
 
   const existing = data.entries[key];
   const merged: Record<string, string> = {
@@ -138,28 +154,54 @@ export async function savePersistentMappings(
   };
 
   data.entries[key] = {
+    name: key,
     sourceUrl: sourceUrl.endsWith('/') ? sourceUrl.slice(0, -1) : sourceUrl,
     targetUrl: targetUrl.endsWith('/') ? targetUrl.slice(0, -1) : targetUrl,
     mappings: merged,
-    updatedAt: new Date().toISOString(),
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
   };
 
   await saveAll(data);
 
   log({
     level: 'info',
-    message: `Saved ${Object.keys(newMappings).length} new persistent mappings (${Object.keys(merged).length} total) for ${sourceUrl} → ${targetUrl}`,
+    message: `Saved ${Object.keys(newMappings).length} new mappings to "${key}" (${Object.keys(merged).length} total)`,
   });
 }
 
 /**
- * Get a summary of all stored server pairs for display.
+ * List all saved mapping sets for the picker UI.
+ * Returns newest first.
  */
-export async function getPersistentMappingSummary(): Promise<{ sourceUrl: string; targetUrl: string; mappingCount: number }[]> {
+export async function listMappingSets(): Promise<PersistentMappingSummary[]> {
   const data = await loadAll();
-  return Object.values(data.entries).map((entry) => ({
-    sourceUrl: entry.sourceUrl,
-    targetUrl: entry.targetUrl,
-    mappingCount: Object.keys(entry.mappings).length,
-  }));
+  return Object.values(data.entries)
+    .map((entry) => ({
+      name: entry.name,
+      sourceUrl: entry.sourceUrl,
+      targetUrl: entry.targetUrl,
+      mappingCount: Object.keys(entry.mappings).length,
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt,
+    }))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+/**
+ * Delete a mapping set by name.
+ */
+export async function deleteMappingSet(name: string): Promise<void> {
+  const key = normalizeName(name);
+  if (!key) return;
+
+  const data = await loadAll();
+  if (data.entries[key]) {
+    delete data.entries[key];
+    await saveAll(data);
+    log({
+      level: 'info',
+      message: `Deleted persistent mapping set "${key}"`,
+    });
+  }
 }

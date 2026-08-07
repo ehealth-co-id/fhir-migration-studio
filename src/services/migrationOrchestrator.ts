@@ -82,6 +82,12 @@ export interface MigrationOptions {
   dateFrom?: string;
   /** Optional end date for _lastUpdated range (inclusive, ISO date string). */
   dateTo?: string;
+  /**
+   * User-provided migration name used to persist ID mappings across runs.
+   * When provided, mappings are loaded from and saved to the persistent
+   * mapping store under this name.
+   */
+  migrationName?: string;
 }
 
 /**
@@ -98,6 +104,7 @@ export async function runDirectMigration(options: MigrationOptions): Promise<voi
     bundleSize = DEFAULT_BUNDLE_SIZE,
     dateFrom,
     dateTo,
+    migrationName,
   } = options;
 
   const store = useMigrationStore.getState();
@@ -123,6 +130,7 @@ export async function runDirectMigration(options: MigrationOptions): Promise<voi
     userDefinedMappings,
     dateFrom,
     dateTo,
+    migrationName,
   );
   await saveCheckpoint(initialCheckpoint);
 
@@ -135,6 +143,7 @@ export async function runDirectMigration(options: MigrationOptions): Promise<voi
     checkpoint: initialCheckpoint,
     dateFrom,
     dateTo,
+    migrationName,
   });
 }
 
@@ -182,6 +191,7 @@ export async function resumeDirectMigration(
     checkpoint,
     dateFrom: checkpoint.dateFrom,
     dateTo: checkpoint.dateTo,
+    migrationName: checkpoint.migrationName,
   });
 }
 
@@ -198,10 +208,11 @@ interface RunMigrationArgs {
   checkpoint: MigrationCheckpoint;
   dateFrom?: string;
   dateTo?: string;
+  migrationName?: string;
 }
 
 async function _runMigration(args: RunMigrationArgs): Promise<void> {
-  const { job, source, target, selectedResourceTypes, bundleSize, checkpoint: initialCheckpoint, dateFrom, dateTo } = args;
+  const { job, source, target, selectedResourceTypes, bundleSize, checkpoint: initialCheckpoint, dateFrom, dateTo, migrationName } = args;
   const store = useMigrationStore.getState();
 
   // Mutable checkpoint — updated and saved after every successful batch
@@ -264,26 +275,25 @@ async function _runMigration(args: RunMigrationArgs): Promise<void> {
     }
 
     // -------------------------------------------------------------------------
-    // Load persistent mappings from previous migrations for this server pair
+    // Load persistent mappings from previous migrations for this name
     // -------------------------------------------------------------------------
-    const persistentMappings = await loadPersistentMappings(
-      source.baseUrl,
-      target.baseUrl,
-    );
-    let persistentMappingsLoaded = 0;
-    for (const [oldRef, newRef] of Object.entries(persistentMappings)) {
-      if (!mappingService.has(oldRef)) {
-        mappingService.set(oldRef, newRef);
-        persistentMappingsLoaded++;
+    if (migrationName) {
+      const persistentMappings = await loadPersistentMappings(migrationName);
+      let persistentMappingsLoaded = 0;
+      for (const [oldRef, newRef] of Object.entries(persistentMappings)) {
+        if (!mappingService.has(oldRef)) {
+          mappingService.set(oldRef, newRef);
+          persistentMappingsLoaded++;
+        }
       }
-    }
 
-    if (persistentMappingsLoaded > 0) {
-      log({
-        level: 'info',
-        message: `Loaded ${persistentMappingsLoaded} persistent mappings from previous migrations (${Object.keys(persistentMappings).length} total available, ${Object.keys(checkpoint.idMappings).length} already in checkpoint)`,
-        jobId: job.id,
-      });
+      if (persistentMappingsLoaded > 0) {
+        log({
+          level: 'info',
+          message: `Loaded ${persistentMappingsLoaded} persistent mappings from "${migrationName}" (${Object.keys(persistentMappings).length} total available, ${Object.keys(checkpoint.idMappings).length} already in checkpoint)`,
+          jobId: job.id,
+        });
+      }
     }
 
     log({
@@ -322,16 +332,18 @@ async function _runMigration(args: RunMigrationArgs): Promise<void> {
     });
 
     // Save all mappings to persistent store for future migrations
-    const allMappings: Record<string, string> = {};
-    for (const [key, value] of mappingService.getMap()) {
-      allMappings[key] = value;
+    if (migrationName) {
+      const allMappings: Record<string, string> = {};
+      for (const [key, value] of mappingService.getMap()) {
+        allMappings[key] = value;
+      }
+      await savePersistentMappings(migrationName, source.baseUrl, target.baseUrl, allMappings);
+      log({
+        level: 'info',
+        message: `Saved ${Object.keys(allMappings).length} mappings to persistent store "${migrationName}"`,
+        jobId: job.id,
+      });
     }
-    await savePersistentMappings(source.baseUrl, target.baseUrl, allMappings);
-    log({
-      level: 'info',
-      message: `Saved ${Object.keys(allMappings).length} mappings to persistent store`,
-      jobId: job.id,
-    });
 
     // -------------------------------------------------------------------------
     // Complete — mark checkpoint as done and delete from disk
@@ -350,14 +362,16 @@ async function _runMigration(args: RunMigrationArgs): Promise<void> {
     store.setError(msg);
     // Checkpoint is intentionally NOT deleted on error — kept for resume
     // Also save whatever mappings we have to persistent store so partial progress isn't lost
-    try {
-      const allMappings: Record<string, string> = {};
-      for (const [key, value] of mappingService.getMap()) {
-        allMappings[key] = value;
+    if (migrationName) {
+      try {
+        const allMappings: Record<string, string> = {};
+        for (const [key, value] of mappingService.getMap()) {
+          allMappings[key] = value;
+        }
+        await savePersistentMappings(migrationName, source.baseUrl, target.baseUrl, allMappings);
+      } catch {
+        // Non-fatal — persistent store save failure should not affect the migration
       }
-      await savePersistentMappings(source.baseUrl, target.baseUrl, allMappings);
-    } catch {
-      // Non-fatal — persistent store save failure should not affect the migration
     }
     log({
       level: 'error',
