@@ -79,9 +79,12 @@ export function DirectMigration() {
         setStep('done');
         // Refresh checkpoint list — completed migrations delete their checkpoint
         listIncompleteCheckpoints().then(setIncompleteCheckpoints).catch(() => {});
+        // Refresh mapping sets — the migration may have saved new mappings
+        listMappingSets().then(setMappingSets).catch(() => {});
       } else if (job.status === 'cancelled' || job.status === 'idle') {
         setStep('configure');
         listIncompleteCheckpoints().then(setIncompleteCheckpoints).catch(() => {});
+        listMappingSets().then(setMappingSets).catch(() => {});
       } else {
         setStep('running');
       }

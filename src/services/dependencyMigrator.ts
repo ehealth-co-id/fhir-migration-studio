@@ -334,8 +334,21 @@ async function uploadResourceTypeBatches(
     };
   });
 
-  // Use the shared bundle splitting algorithm
-  const batches = splitPreparedEntries(preparedEntries);
+  // Use the shared bundle splitting algorithm.
+   // For Media resource type, upload one resource per bundle to avoid
+   // HAPI FHIR BinaryStorageEntity collision (EntityExistsException) when
+   // multiple Media resources share identical inline content.data within
+   // the same transaction.
+   const batches = resourceType === 'Media'
+     ? preparedEntries.map((entry) => ({
+         bundle: {
+           resourceType: 'Bundle' as const,
+           type: 'transaction' as const,
+           entry: [entry.entry],
+         },
+         originalRefs: entry.originalRef ? [entry.originalRef] : [],
+       }))
+     : splitPreparedEntries(preparedEntries);
 
   for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
     if (!(await checkStatus())) return checkpoint;
