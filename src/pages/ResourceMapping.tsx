@@ -39,6 +39,40 @@ export function ResourceMapping() {
     setError('');
   };
 
+  /** Split a CSV line respecting quoted fields (which may contain commas). */
+  const parseCsvLine = (line: string): string[] => {
+    const fields: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (inQuotes) {
+        if (ch === '"') {
+          // Check for escaped quote ("") inside a quoted field
+          if (i + 1 < line.length && line[i + 1] === '"') {
+            current += '"';
+            i++; // skip the next quote
+          } else {
+            inQuotes = false;
+          }
+        } else {
+          current += ch;
+        }
+      } else {
+        if (ch === '"') {
+          inQuotes = true;
+        } else if (ch === ',') {
+          fields.push(current.trim());
+          current = '';
+        } else {
+          current += ch;
+        }
+      }
+    }
+    fields.push(current.trim());
+    return fields;
+  };
+
   const handleCSVImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -48,7 +82,11 @@ export function ResourceMapping() {
       const lines = content.split('\n').filter((l) => l.trim() && !l.startsWith('#'));
       const imported: MappingRule[] = [];
       for (const line of lines) {
-        const [resourceType, sourceId, targetId, label] = line.split(',').map((s) => s.trim().replace(/"/g, ''));
+        const fields = parseCsvLine(line);
+        const resourceType = fields[0];
+        const sourceId = fields[1];
+        const targetId = fields[2];
+        const label = fields[3];
         if (!resourceType || !sourceId || !targetId) continue;
         if (!MAPPABLE_RESOURCE_TYPES.includes(resourceType as MappableResourceType)) continue;
         imported.push({

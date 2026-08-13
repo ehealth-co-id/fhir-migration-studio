@@ -125,6 +125,7 @@ export async function listIncompleteCheckpoints(): Promise<CheckpointSummary[]> 
           totalMappings: Object.keys(cp.idMappings).length,
           dateFrom: cp.dateFrom,
           dateTo: cp.dateTo,
+          migrationName: cp.migrationName,
         });
       } catch {
         // Skip corrupted files
@@ -166,6 +167,7 @@ export function createCheckpoint(
   userDefinedMappings: Record<string, string> = {},
   dateFrom?: string,
   dateTo?: string,
+  migrationName?: string,
 ): MigrationCheckpoint {
   return {
     version: 2,
@@ -180,6 +182,7 @@ export function createCheckpoint(
     idMappings: { ...userDefinedMappings },
     dateFrom,
     dateTo,
+    migrationName,
   };
 }
 

@@ -11,6 +11,8 @@ import {
   Trash2,
   Search,
   Loader2,
+  List,
+  Database,
 } from 'lucide-react';
 import { Topbar } from '../components/layout/Topbar';
 import { Button } from '../components/ui/Button';
@@ -24,7 +26,7 @@ import { useMappingStore } from '../store/mappingStore';
 import { runDirectMigration, resumeDirectMigration } from '../services/migrationOrchestrator';
 import { listIncompleteCheckpoints, deleteCheckpoint } from '../services/checkpointService';
 import { detectPatientMappings, type PatientDetectionResult } from '../services/patientDetector';
-import { savePersistentMappings } from '../services/persistentMappingStore';
+import { savePersistentMappings, listMappingSets, deleteMappingSet, type PersistentMappingSummary } from '../services/persistentMappingStore';
 import { MIGRATABLE_RESOURCE_TYPES, type FhirResourceType } from '../types/fhir';
 import { computeOverallProgress, type CheckpointSummary } from '../types/migration';
 import { generateReport, formatReportText } from '../services/reporter';
@@ -54,13 +56,20 @@ export function DirectMigration() {
   const [detecting, setDetecting] = useState(false);
   const [detectionResult, setDetectionResult] = useState<PatientDetectionResult | null>(null);
   const [detectionError, setDetectionError] = useState('');
+  const [migrationName, setMigrationName] = useState('');
+  const [mappingSets, setMappingSets] = useState<PersistentMappingSummary[]>([]);
+  const [selectedMappingSet, setSelectedMappingSet] = useState('');
+  const [showMappingSets, setShowMappingSets] = useState(false);
   void running;
 
-  // Load any incomplete checkpoints on mount
+  // Load any incomplete checkpoints and mapping sets on mount
   useEffect(() => {
     listIncompleteCheckpoints()
       .then((cps) => setIncompleteCheckpoints(cps))
       .catch(() => setIncompleteCheckpoints([]));
+    listMappingSets()
+      .then((sets) => setMappingSets(sets))
+      .catch(() => setMappingSets([]));
   }, []);
 
   // Sync step state with the active job if one is running or completed
@@ -116,12 +125,13 @@ export function DirectMigration() {
         mappingRules: rules,
         dateFrom: dateFrom || undefined,
         dateTo: dateTo || undefined,
+        migrationName: migrationName.trim() || undefined,
       });
     } finally {
       setRunning(false);
       setStep('done');
     }
-  }, [source, target, selected, rules, dateFrom, dateTo]);
+  }, [source, target, selected, rules, dateFrom, dateTo, migrationName]);
 
   const handleDetectPatients = useCallback(async () => {
     if (!source.baseUrl || !target.baseUrl) return;
@@ -145,7 +155,12 @@ export function DirectMigration() {
 
       // Save detected mappings to persistent store
       if (Object.keys(result.mappings).length > 0) {
-        await savePersistentMappings(source.baseUrl, target.baseUrl, result.mappings);
+        const name = migrationName.trim();
+        if (name) {
+          await savePersistentMappings(name, source.baseUrl, target.baseUrl, result.mappings);
+          // Refresh the mapping sets list
+          listMappingSets().then(setMappingSets).catch(() => {});
+        }
       }
 
       setDetectionResult(result);
@@ -154,7 +169,7 @@ export function DirectMigration() {
     } finally {
       setDetecting(false);
     }
-  }, [source, target]);
+  }, [source, target, migrationName]);
 
   const handleClearDetection = () => {
     setDetectionResult(null);
@@ -315,6 +330,109 @@ export function DirectMigration() {
       {/* Configure step */}
       {step === 'configure' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* Migration Name & Saved Mapping Sets */}
+          <Card title="Migration Identity">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {/* Migration name input */}
+              <div>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 4, color: 'var(--color-text)' }}>
+                  Migration Name
+                </label>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input
+                    type="text"
+                    value={migrationName}
+                    onChange={(e) => setMigrationName(e.target.value)}
+                    placeholder='e.g. "Migrasi Klinik A Premium ke A Lite"'
+                    className="input"
+                    style={{ flex: 1 }}
+                  />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    icon={<List size={14} />}
+                    onClick={() => setShowMappingSets(!showMappingSets)}
+                    disabled={mappingSets.length === 0}
+                  >
+                    {mappingSets.length > 0 ? `Saved (${mappingSets.length})` : 'No Saved'}
+                  </Button>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 }}>
+                  Give this migration a name to persist ID mappings across runs.
+                  The same name can be reused in future migrations to load previously discovered mappings.
+                </div>
+              </div>
+
+              {/* Saved mapping sets list (collapsible) */}
+              {showMappingSets && mappingSets.length > 0 && (
+                <div style={{
+                  background: 'var(--color-surface-alt)',
+                  borderRadius: 8,
+                  padding: 8,
+                  maxHeight: 200,
+                  overflowY: 'auto',
+                }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 6, padding: '0 4px' }}>
+                    Saved Mapping Sets
+                  </div>
+                  {mappingSets.map((set) => (
+                    <div
+                      key={set.name}
+                      onClick={() => {
+                        setMigrationName(set.name);
+                        setSelectedMappingSet(set.name);
+                        setShowMappingSets(false);
+                      }}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        padding: '6px 8px',
+                        borderRadius: 4,
+                        cursor: 'pointer',
+                        fontSize: 12,
+                        background: selectedMappingSet === set.name || migrationName === set.name
+                          ? 'var(--color-primary-muted)'
+                          : 'transparent',
+                        border: selectedMappingSet === set.name || migrationName === set.name
+                          ? '1px solid var(--color-primary)'
+                          : '1px solid transparent',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                        <Database size={12} style={{ flexShrink: 0, color: 'var(--color-text-muted)' }} />
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {set.name}
+                          </div>
+                          <div style={{ fontSize: 10, color: 'var(--color-text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {set.mappingCount.toLocaleString()} mappings · updated {new Date(set.updatedAt).toLocaleDateString()}
+                          </div>
+                        </div>
+                      </div>
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        icon={<Trash2 size={10} />}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (window.confirm(`Delete mapping set "${set.name}"?`)) {
+                            deleteMappingSet(set.name).then(() => {
+                              listMappingSets().then(setMappingSets).catch(() => {});
+                            });
+                          }
+                        }}
+                        style={{ flexShrink: 0, marginLeft: 4, padding: '2px 6px', fontSize: 10 }}
+                      >
+                        Del
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </Card>
+
           {/* Server status */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <ServerCard role="source" onEdit={() => navigate('/settings')} />
@@ -416,15 +534,23 @@ export function DirectMigration() {
             </div>
 
             {!detecting && !detectionResult && !detectionError && (
-              <Button
-                variant="secondary"
-                size="sm"
-                icon={<Search size={14} />}
-                disabled={!source.baseUrl || !target.baseUrl}
-                onClick={handleDetectPatients}
-              >
-                Detect Existing Patients
-              </Button>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {!migrationName.trim() && (
+                  <div className="alert alert-warning" style={{ fontSize: 12 }}>
+                    <AlertTriangle size={14} />
+                    <span>Enter a <strong>Migration Name</strong> above before detecting. The name is used to save and reload mappings later.</span>
+                  </div>
+                )}
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon={<Search size={14} />}
+                  disabled={!source.baseUrl || !target.baseUrl || !migrationName.trim()}
+                  onClick={handleDetectPatients}
+                >
+                  Detect Existing Patients
+                </Button>
+              </div>
             )}
 
             {detecting && (

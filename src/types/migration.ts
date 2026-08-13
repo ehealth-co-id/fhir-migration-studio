@@ -105,6 +105,8 @@ export interface MigrationCheckpoint {
   dateFrom?: string;
   /** Optional end date for _lastUpdated range (inclusive, ISO date string). */
   dateTo?: string;
+  /** User-provided migration name for persistent mapping store lookups. */
+  migrationName?: string;
 }
 
 /** Summary shown in the UI "Resume Migration" list */
@@ -117,6 +119,7 @@ export interface CheckpointSummary {
   totalMappings: number;
   dateFrom?: string;
   dateTo?: string;
+  migrationName?: string;
 }
 
 
