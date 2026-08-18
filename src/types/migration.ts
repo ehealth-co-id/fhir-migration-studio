@@ -96,6 +96,10 @@ export interface MigrationCheckpoint {
    */
   compositionRelatesToPatched: boolean;
   /**
+   * True once the Observation.related restore step (PUT) has completed.
+   */
+  observationRelatedPatched: boolean;
+  /**
    * All known ID mappings — both user-defined (Practitioner/Location/
    * HealthcareService/Organization) and server-assigned (Patient/Coverage/…).
    * Format: { "Patient/100": "Patient/987", "HealthcareService/6301787": "HealthcareService/105" }

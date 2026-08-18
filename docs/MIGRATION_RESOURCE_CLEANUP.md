@@ -77,7 +77,11 @@ MedicationRequest
 
 ↓
 
-Procedure
+Observation
+
+↓
+
+Specimen
 
 ↓
 
@@ -85,11 +89,7 @@ ProcedureRequest
 
 ↓
 
-ClinicalImpression
-
-↓
-
-Observation
+Procedure
 
 ↓
 

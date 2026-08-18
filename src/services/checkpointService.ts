@@ -12,6 +12,8 @@
  *   - All ID mappings (both user-defined and server-assigned)
  *   - Which resource types have been fully completed
  *   - Whether Patient.link.other has been restored
+ *   - Whether Composition.relatesTo has been restored
+ *   - Whether Observation.related has been restored
  */
 
 import {
@@ -118,8 +120,8 @@ export async function loadCheckpoint(jobId: string): Promise<MigrationCheckpoint
  *
  * A checkpoint is considered complete (and therefore hidden) when:
  *   - it carries the explicit `done` marker, OR
- *   - every selected resource type has been uploaded AND the Patient.link.other
- *     and Composition.relatesTo restore steps have finished.
+ *   - every selected resource type has been uploaded AND the restore steps
+ *     (Patient.link.other, Composition.relatesTo, Observation.related) have finished.
  */
 export async function listIncompleteCheckpoints(): Promise<CheckpointSummary[]> {
   try {
@@ -167,8 +169,9 @@ export async function listIncompleteCheckpoints(): Promise<CheckpointSummary[]> 
 }
 
 /**
- * True when every selected resource type has been fully uploaded and both
- * restore steps (Patient.link.other, Composition.relatesTo) have finished.
+ * True when every selected resource type has been fully uploaded and all
+ * restore steps (Patient.link.other, Composition.relatesTo, Observation.related)
+ * have finished.
  */
 function isFunctionallyComplete(cp: MigrationCheckpoint): boolean {
   const selected = cp.selectedResourceTypes?.length
@@ -184,9 +187,12 @@ function isFunctionallyComplete(cp: MigrationCheckpoint): boolean {
     !selected || selected.includes('Patient');
   const needsCompositionPatch =
     !selected || selected.includes('Composition');
+  const needsObservationPatch =
+    !selected || selected.includes('Observation');
 
   if (needsPatientPatch && !cp.patientLinkPatched) return false;
   if (needsCompositionPatch && !cp.compositionRelatesToPatched) return false;
+  if (needsObservationPatch && !cp.observationRelatedPatched) return false;
 
   return true;
 }
@@ -239,6 +245,7 @@ export function createCheckpoint(
     completedResourceTypes: [],
     patientLinkPatched: false,
     compositionRelatesToPatched: false,
+    observationRelatedPatched: false,
     idMappings: { ...userDefinedMappings },
     dateFrom,
     dateTo,
@@ -277,6 +284,11 @@ export function checkpointWithPatientLinkPatched(checkpoint: MigrationCheckpoint
 /** Mark the Composition.relatesTo restore step as completed. */
 export function checkpointWithCompositionRelatesToPatched(checkpoint: MigrationCheckpoint): MigrationCheckpoint {
   return { ...checkpoint, compositionRelatesToPatched: true };
+}
+
+/** Mark the Observation.related restore step as completed. */
+export function checkpointWithObservationRelatedPatched(checkpoint: MigrationCheckpoint): MigrationCheckpoint {
+  return { ...checkpoint, observationRelatedPatched: true };
 }
 
 /** Mark the migration as fully done (used before deletion). */

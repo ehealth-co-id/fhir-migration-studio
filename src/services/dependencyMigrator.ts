@@ -21,6 +21,18 @@
  *   Step 4b: After ALL Patients are uploaded and their IDs are known, send a PUT
  *            bundle to restore Patient.link.other with mapped destination IDs.
  *
+ * Special case — Composition:
+ *   Step 4a: Upload all Compositions WITHOUT relatesTo (field stripped)
+ *   Step 4b: After ALL Compositions are uploaded and their IDs are known, send a
+ *            PUT bundle to restore Composition.relatesTo with mapped destination IDs.
+ *
+ * Special case — Observation:
+ *   Step 4a: Upload all Observations WITHOUT related (field stripped)
+ *   Step 4b: After ALL Observations are uploaded and their IDs are known, send a
+ *            PUT bundle to restore Observation.related with mapped destination IDs.
+ *            Observation.related.target may reference another Observation, so the
+ *            reference can only be rewritten once every Observation ID is known.
+ *
  * Per docs/FHIR_RULES.md:
  *   - Each Transaction Bundle contains only resources of a single resource type
  *   - Bundle size is configurable (default 100)
@@ -40,6 +52,7 @@ import {
   checkpointWithCompletedType,
   checkpointWithPatientLinkPatched,
   checkpointWithCompositionRelatesToPatched,
+  checkpointWithObservationRelatedPatched,
   isResourceTypeComplete,
 } from './checkpointService';
 import { DEPENDENCY_ORDER, sortByDependencyOrder } from './dependencyGraph';
@@ -121,6 +134,8 @@ export async function runDependencyMigration(
   let patientResources: FhirResource[] = [];
   // Keep Compositions in memory for the Composition.relatesTo restoration step
   let compositionResources: FhirResource[] = [];
+  // Keep Observations in memory for the Observation.related restoration step
+  let observationResources: FhirResource[] = [];
 
   for (const resourceType of orderedTypes) {
     if (!(await checkStatus())) return checkpoint;
@@ -142,6 +157,11 @@ export async function runDependencyMigration(
       // Still need Composition resources for the relatesTo step — download but don't upload
       if (resourceType === 'Composition' && !checkpoint.compositionRelatesToPatched) {
         compositionResources = await downloadAllResources(source, resourceType, jobId, undefined, dateFrom, dateTo);
+      }
+
+      // Still need Observation resources for the related step — download but don't upload
+      if (resourceType === 'Observation' && !checkpoint.observationRelatedPatched) {
+        observationResources = await downloadAllResources(source, resourceType, jobId, undefined, dateFrom, dateTo);
       }
 
       continue;
@@ -197,6 +217,23 @@ export async function runDependencyMigration(
         jobId,
         checkStatus,
         ['relatesTo'], // strip Composition.relatesTo
+      );
+    } else if (resourceType === 'Observation') {
+      // Stage 1: Upload Observations WITHOUT related
+      // Observation.related.target may reference another Observation whose
+      // destination ID is not known yet, so related is restored in Stage 2.
+      observationResources = resources;
+      checkpoint = await uploadResourceTypeBatches(
+        resources,
+        resourceType,
+        bundleSize,
+        target,
+        mappingService,
+        checkpoint,
+        onCheckpoint,
+        jobId,
+        checkStatus,
+        ['related'], // strip Observation.related
       );
     } else {
       // Normal upload: rewrite references then upload
@@ -254,6 +291,23 @@ export async function runDependencyMigration(
   ) {
     checkpoint = await restoreCompositionRelatesTo(
       compositionResources,
+      target,
+      mappingService,
+      checkpoint,
+      onCheckpoint,
+      jobId,
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Observation Stage 2: Restore Observation.related
+  // ---------------------------------------------------------------------------
+  if (
+    selectedResourceTypes.includes('Observation') &&
+    !checkpoint.observationRelatedPatched
+  ) {
+    checkpoint = await restoreObservationRelated(
+      observationResources,
       target,
       mappingService,
       checkpoint,
@@ -662,6 +716,130 @@ async function restoreCompositionRelatesTo(
   }
 
   checkpoint = checkpointWithCompositionRelatesToPatched(checkpoint);
+  onCheckpoint(checkpoint);
+  await saveCheckpoint(checkpoint);
+  return checkpoint;
+}
+
+/**
+ * Observation Stage 2 — restore Observation.related.
+ *
+ * After ALL Observations (and other resource types) have been uploaded (Stage 1),
+ * send a Transaction Bundle of PUT entries to restore each Observation's related
+ * references using the destination Observation IDs from ResourceMappingService.
+ *
+ * Observation.related.target may reference another Observation (e.g. derived-from,
+ * has-member), so it can only be rewritten once every Observation ID is known.
+ */
+async function restoreObservationRelated(
+  observations: FhirResource[],
+  target: ServerConfig,
+  mappingService: ResourceMappingService,
+  checkpoint: MigrationCheckpoint,
+  onCheckpoint: (updated: MigrationCheckpoint) => void,
+  jobId: string,
+): Promise<MigrationCheckpoint> {
+  if (checkpoint.observationRelatedPatched) {
+    log({
+      level: 'info',
+      message: '[Migration] Observation related already restored (checkpoint) — skipping',
+      jobId,
+    });
+    return checkpoint;
+  }
+
+  const observationsWithRelated = observations.filter(
+    (o) => Array.isArray((o as Record<string, unknown>).related),
+  );
+
+  if (observationsWithRelated.length === 0) {
+    log({
+      level: 'info',
+      message: '[Migration] No Observations have related — skipping restore step',
+      jobId,
+    });
+    checkpoint = checkpointWithObservationRelatedPatched(checkpoint);
+    onCheckpoint(checkpoint);
+    await saveCheckpoint(checkpoint);
+    return checkpoint;
+  }
+
+  log({
+    level: 'info',
+    message: `[Migration] Restoring related for ${observationsWithRelated.length} Observations...`,
+    resourceType: 'Observation',
+    jobId,
+  });
+
+  useMigrationStore.getState().updateStatus('patching');
+
+  const { fhirClient } = await import('./fhirClient');
+  const { generateUrn } = await import('./bundleBuilder');
+
+  const MIGRATION_MARKER = {
+    url: 'https://ehealth.co.id/terminology/initiator-component',
+    valueString: 'fhir-migration-tool',
+  };
+
+  const entries = observationsWithRelated.map((observation) => {
+    const newRef = observation.id ? mappingService.get(`Observation/${observation.id}`) : undefined;
+    if (!newRef) return null; // Observation wasn't successfully uploaded — skip
+
+    const newId = newRef.split('/')[1];
+
+    // Rewrite related references using the mapping
+    const rewritten = rewriteResourceRefs(observation, mappingService.getMap());
+    const { id: _id, resourceType: _rt, meta, ...rest } = rewritten;
+    void _id;
+    void _rt;
+
+    // Inline meta cleaning: strip versionId/lastUpdated, inject migration marker
+    const { versionId: _v, lastUpdated: _l, ...metaRest } =
+      (meta ?? {}) as NonNullable<FhirResource['meta']>;
+    void _v; void _l;
+    const metaCleaned = {
+      ...metaRest,
+      extension: [...(metaRest.extension ?? []), MIGRATION_MARKER],
+    };
+
+    return {
+      fullUrl: generateUrn(),
+      resource: { resourceType: 'Observation' as const, id: newId, ...rest, meta: metaCleaned } as FhirResource,
+      request: { method: 'PUT' as const, url: `Observation/${newId}` },
+    };
+  }).filter((e): e is NonNullable<typeof e> => e !== null);
+
+  if (entries.length === 0) {
+    log({
+      level: 'warn',
+      message: '[Migration] No Observations could be patched (mapping missing)',
+      jobId,
+    });
+  } else {
+    const batches = splitBundleEntries(entries);
+    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+      const patchBundle = batches[batchIndex];
+      try {
+        await fhirClient.post(target, '/', patchBundle);
+        log({
+          level: 'success',
+          message: `[Migration] Restored related for batch ${batchIndex + 1} (${patchBundle.entry?.length ?? 0} Observations)`,
+          resourceType: 'Observation',
+          jobId,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log({
+          level: 'error',
+          message: `[Migration] Observation related restore batch ${batchIndex + 1} failed: ${msg}`,
+          resourceType: 'Observation',
+          jobId,
+        });
+      }
+    }
+  }
+
+  checkpoint = checkpointWithObservationRelatedPatched(checkpoint);
   onCheckpoint(checkpoint);
   await saveCheckpoint(checkpoint);
   return checkpoint;

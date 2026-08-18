@@ -14,6 +14,7 @@ Supported Resources
 - MedicationDispense
 - Procedure
 - ProcedureRequest
+- Specimen
 - Media
 <!-- - Practitioner
 - Location

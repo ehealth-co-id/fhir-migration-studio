@@ -37,6 +37,7 @@ The migration imports:
 * MedicationDispense
 * Procedure
 * ProcedureRequest
+* Specimen
 * Consent
 * AuditEvent
 * Media
@@ -126,6 +127,7 @@ Observation
 
 * references Patient
 * Practitioner
+* references another Observation via `Observation.related.target` (e.g. derived-from / has-member)
 
 AllergyIntolerance
 
@@ -157,6 +159,12 @@ ProcedureRequest
 
 * references Patient
 * Practitioner
+
+Specimen
+
+* references Appointment (via `related-appointment` extension `valueReference`)
+* Patient (subject)
+* ProcedureRequest (request)
 
 Consent
 
@@ -243,10 +251,6 @@ Media
 
 ↓
 
-Observation
-
-↓
-
 AllergyIntolerance
 
 ↓
@@ -256,6 +260,14 @@ Procedure
 ↓
 
 ProcedureRequest
+
+↓
+
+Specimen
+
+↓
+
+Observation
 
 ↓
 
@@ -348,6 +360,26 @@ Collect every Patient ID mapping.
 Stage 2
 
 Update Patient resources and restore `Patient.link.other` using mapped Patient IDs.
+
+---
+
+# Observation.related
+
+Observation resources may reference other Observation resources via `Observation.related.target`.
+
+The destination server rejects the reference while the target Observation ID is not yet known (HAPI-1094: Resource Observation/xxx not found).
+
+Handle this using two migration stages, same as `Patient.link.other` and `Composition.relatesTo`.
+
+Stage 1
+
+Create all Observation resources without `Observation.related`.
+
+Collect every Observation ID mapping.
+
+Stage 2
+
+Update Observation resources and restore `Observation.related` using mapped Observation IDs.
 
 ---
 

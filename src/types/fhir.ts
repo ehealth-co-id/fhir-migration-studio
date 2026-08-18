@@ -23,6 +23,7 @@ export type FhirResourceType =
   | 'Schedule'
   | 'Slot'
   | 'Media'
+  | 'Specimen'
   | 'Practitioner'
   | 'Location'
   | 'HealthcareService'
@@ -43,10 +44,11 @@ export const MIGRATABLE_RESOURCE_TYPES: FhirResourceType[] = [
   'Condition',
   'Encounter',
   'Media',
-  'Observation',
   'AllergyIntolerance',
   'Procedure',
   'ProcedureRequest',
+  'Specimen',
+  'Observation',
   'MedicationRequest',
   'MedicationDispense',
   'ClinicalImpression',

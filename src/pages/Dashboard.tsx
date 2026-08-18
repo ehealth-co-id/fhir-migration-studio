@@ -31,6 +31,7 @@ const RESOURCE_ICONS: Partial<Record<FhirResourceType, string>> = {
   Composition: '📄',
   Observation: '🔬',
   Condition: '⚕️',
+  Specimen: '🧪',
 };
 
 export function Dashboard() {
