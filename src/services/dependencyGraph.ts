@@ -31,11 +31,12 @@ import type { FhirResourceType } from '../types/fhir';
  * Specimen         — references Appointment, Patient, ProcedureRequest
  * Observation      — references Patient, Practitioner, Specimen (and other
  *                    Observations via related.target — handled two-stage)
+ * Immunization     — references Patient, Encounter, Practitioner, Observation
  * MedicationRequest  — references Patient, Practitioner
  * MedicationDispense — references Patient, Practitioner, MedicationRequest
  * ClinicalImpression — references Patient, Condition
  * Composition      — references Encounter, Patient, Practitioner, Condition,
- *                    Observation, AllergyIntolerance, ClinicalImpression,
+ *                    Observation, Immunization, AllergyIntolerance, ClinicalImpression,
  *                    MedicationRequest, MedicationDispense, Procedure, ProcedureRequest
  * Consent          — references Location, Appointment, Patient, Practitioner, Procedure
  * AuditEvent       — references Patient, Practitioner
@@ -55,6 +56,7 @@ export const DEPENDENCY_ORDER: FhirResourceType[] = [
   'ProcedureRequest',
   'Specimen',
   'Observation',
+  'Immunization',
   'MedicationRequest',
   'MedicationDispense',
   'ClinicalImpression',

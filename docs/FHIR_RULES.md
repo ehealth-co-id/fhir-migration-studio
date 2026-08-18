@@ -38,6 +38,7 @@ The migration imports:
 * Procedure
 * ProcedureRequest
 * Specimen
+* Immunization
 * Consent
 * AuditEvent
 * Media
@@ -109,6 +110,7 @@ References:
 * Practitioner
 * Condition
 * Observation
+* Immunization
 * AllergyIntolerance
 * ClinicalImpression
 * MedicationRequest
@@ -165,6 +167,13 @@ Specimen
 * references Appointment (via `related-appointment` extension `valueReference`)
 * Patient (subject)
 * ProcedureRequest (request)
+
+Immunization
+
+* references Patient
+* Encounter
+* Practitioner (practitioner[].actor)
+* Observation (reaction[].detail)
 
 Consent
 
@@ -268,6 +277,10 @@ Specimen
 ↓
 
 Observation
+
+↓
+
+Immunization
 
 ↓
 

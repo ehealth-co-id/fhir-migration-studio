@@ -77,6 +77,10 @@ MedicationRequest
 
 ↓
 
+Immunization
+
+↓
+
 Observation
 
 ↓

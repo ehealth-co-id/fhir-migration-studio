@@ -32,6 +32,7 @@ const RESOURCE_ICONS: Partial<Record<FhirResourceType, string>> = {
   Observation: '🔬',
   Condition: '⚕️',
   Specimen: '🧪',
+  Immunization: '💉',
 };
 
 export function Dashboard() {

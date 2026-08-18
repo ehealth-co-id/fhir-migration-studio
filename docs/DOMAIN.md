@@ -15,6 +15,7 @@ Supported Resources
 - Procedure
 - ProcedureRequest
 - Specimen
+- Immunization
 - Media
 <!-- - Practitioner
 - Location
