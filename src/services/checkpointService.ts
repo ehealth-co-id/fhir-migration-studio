@@ -45,6 +45,19 @@ async function ensureDir(): Promise<void> {
   }
 }
 
+/**
+ * Race a promise against a timeout so a stuck FS/IPC call can never hang
+ * the migration completion flow.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    }),
+  ]);
+}
+
 function filename(jobId: string): string {
   return `${CHECKPOINT_DIR}/${jobId}.json`;
 }
@@ -61,7 +74,11 @@ export async function saveCheckpoint(checkpoint: MigrationCheckpoint): Promise<v
   try {
     await ensureDir();
     const json = JSON.stringify(checkpoint, null, 2);
-    await writeTextFile(filename(checkpoint.jobId), json, { baseDir: BASE_DIR });
+    await withTimeout(
+      writeTextFile(filename(checkpoint.jobId), json, { baseDir: BASE_DIR }),
+      15000,
+      'Checkpoint save',
+    );
   } catch (err) {
     console.warn('[CheckpointService] Failed to save checkpoint:', err);
   }
@@ -98,6 +115,11 @@ export async function loadCheckpoint(jobId: string): Promise<MigrationCheckpoint
 /**
  * List all checkpoints that are NOT yet fully done (have remaining resource types to process).
  * Used by the UI to show "Resume Migration" options.
+ *
+ * A checkpoint is considered complete (and therefore hidden) when:
+ *   - it carries the explicit `done` marker, OR
+ *   - every selected resource type has been uploaded AND the Patient.link.other
+ *     and Composition.relatesTo restore steps have finished.
  */
 export async function listIncompleteCheckpoints(): Promise<CheckpointSummary[]> {
   try {
@@ -115,6 +137,11 @@ export async function listIncompleteCheckpoints(): Promise<CheckpointSummary[]> 
         // Only show compatible v2 checkpoints that are not done
         if (cp.version !== CURRENT_VERSION) continue;
         if ((cp as MigrationCheckpoint & { done?: boolean }).done) continue;
+
+        // Functionally-complete checkpoints (all types uploaded + patches done)
+        // are also considered complete, even if the `done` marker was never
+        // written (e.g. app closed right before cleanup).
+        if (isFunctionallyComplete(cp)) continue;
 
         summaries.push({
           jobId: cp.jobId,
@@ -140,14 +167,47 @@ export async function listIncompleteCheckpoints(): Promise<CheckpointSummary[]> 
 }
 
 /**
+ * True when every selected resource type has been fully uploaded and both
+ * restore steps (Patient.link.other, Composition.relatesTo) have finished.
+ */
+function isFunctionallyComplete(cp: MigrationCheckpoint): boolean {
+  const selected = cp.selectedResourceTypes?.length
+    ? cp.selectedResourceTypes
+    : null;
+
+  if (selected) {
+    const allTypesDone = selected.every((rt) => cp.completedResourceTypes.includes(rt));
+    if (!allTypesDone) return false;
+  }
+
+  const needsPatientPatch =
+    !selected || selected.includes('Patient');
+  const needsCompositionPatch =
+    !selected || selected.includes('Composition');
+
+  if (needsPatientPatch && !cp.patientLinkPatched) return false;
+  if (needsCompositionPatch && !cp.compositionRelatesToPatched) return false;
+
+  return true;
+}
+
+/**
  * Delete a checkpoint file from disk.
  * Called when migration completes successfully.
  */
 export async function deleteCheckpoint(jobId: string): Promise<void> {
   try {
-    const fileExists = await exists(filename(jobId), { baseDir: BASE_DIR });
+    const fileExists = await withTimeout(
+      exists(filename(jobId), { baseDir: BASE_DIR }),
+      10000,
+      'Checkpoint exists',
+    );
     if (fileExists) {
-      await remove(filename(jobId), { baseDir: BASE_DIR });
+      await withTimeout(
+        remove(filename(jobId), { baseDir: BASE_DIR }),
+        10000,
+        'Checkpoint delete',
+      );
     }
   } catch (err) {
     console.warn('[CheckpointService] Failed to delete checkpoint:', err);

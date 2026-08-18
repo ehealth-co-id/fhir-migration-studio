@@ -30,7 +30,13 @@ export default defineConfig(async () => ({
       : undefined,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      ignored: [
+        "**/src-tauri/**",
+        // The persistent mappings file lives in ./data and is rewritten by
+        // the app during migrations — watching it would trigger a full page
+        // reload (and reset the store) right when a migration finishes.
+        "**/data/**",
+      ],
     },
   },
 }));

@@ -10,16 +10,10 @@
     "fs:allow-applocaldata-write",
     "fs:allow-applocaldata-meta-recursive",
     "fs:allow-mkdir",
+    "fs:allow-remove",
     {
       "identifier": "fs:scope",
-      "allow": [
-        { "path": "$APPDATA/**" },
-        { "path": "$RESOURCE/../data/**" },
-        { "path": "$RESOURCE/../checkpoints/**" }
-      ]
-    },
-    "fs:allow-read-text-file",
-    "fs:allow-write-text-file",
-    "fs:allow-exists"
+      "allow": [{ "path": "$APPLOCALDATA/**" }]
+    }
   ]
 }

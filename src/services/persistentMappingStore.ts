@@ -9,28 +9,19 @@
  *
  * File location: {projectRoot}/data/persistent-mappings.json
  * Stored in the project repo so it can be committed to git and shared.
+ *
+ * Reads/writes go through a small Rust command (see src-tauri/src/lib.rs)
+ * because the Tauri fs plugin scope cannot express "project folder next to
+ * src-tauri" reliably (no `..` support in scope globs).
  */
 
-import {
-  BaseDirectory,
-  exists,
-  readTextFile,
-  writeTextFile,
-  mkdir,
-} from '@tauri-apps/plugin-fs';
+import { invoke } from '@tauri-apps/api/core';
 import { log } from '../store/logStore';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-/**
- * Path relative to BaseDirectory.Resource (= src-tauri/ in dev mode).
- * "../data" resolves to {projectRoot}/data/.
- */
-const FILENAME = '../data/persistent-mappings.json';
-const DATA_DIR = '../data';
-const BASE_DIR = BaseDirectory.Resource;
 const CURRENT_VERSION = 2; // v1 → v2: key changed from URL-based to name-based
 
 // ---------------------------------------------------------------------------
@@ -74,26 +65,14 @@ function normalizeName(name: string): string {
   return name.trim();
 }
 
-async function ensureDataDir(): Promise<void> {
-  try {
-    const dirExists = await exists(DATA_DIR, { baseDir: BASE_DIR });
-    if (!dirExists) {
-      await mkdir(DATA_DIR, { baseDir: BASE_DIR, recursive: true });
-    }
-  } catch {
-    // Non-fatal — dir may exist or permissions may prevent creation
-  }
-}
-
 async function loadAll(): Promise<PersistentMappingData> {
   try {
-    const fileExists = await exists(FILENAME, { baseDir: BASE_DIR });
-    if (!fileExists) {
+    const raw = await invoke<string | null>('read_persistent_mappings');
+    if (!raw) {
       return { version: CURRENT_VERSION, entries: {} };
     }
 
-    const json = await readTextFile(FILENAME, { baseDir: BASE_DIR });
-    const parsed = JSON.parse(json) as PersistentMappingData;
+    const parsed = JSON.parse(raw) as PersistentMappingData;
 
     if (parsed.version !== CURRENT_VERSION) {
       console.warn(
@@ -111,9 +90,8 @@ async function loadAll(): Promise<PersistentMappingData> {
 
 async function saveAll(data: PersistentMappingData): Promise<void> {
   try {
-    await ensureDataDir();
     const json = JSON.stringify(data, null, 2);
-    await writeTextFile(FILENAME, json, { baseDir: BASE_DIR });
+    await invoke('write_persistent_mappings', { contents: json });
   } catch (err) {
     console.warn('[PersistentMappingStore] Failed to save persistent mappings:', err);
   }
