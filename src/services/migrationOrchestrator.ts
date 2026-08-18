@@ -331,32 +331,64 @@ async function _runMigration(args: RunMigrationArgs): Promise<void> {
       jobId: job.id,
     });
 
-    // Save all mappings to persistent store for future migrations
-    if (migrationName) {
-      const allMappings: Record<string, string> = {};
-      for (const [key, value] of mappingService.getMap()) {
-        allMappings[key] = value;
-      }
-      await savePersistentMappings(migrationName, source.baseUrl, target.baseUrl, allMappings);
-      log({
-        level: 'info',
-        message: `Saved ${Object.keys(allMappings).length} mappings to persistent store "${migrationName}"`,
-        jobId: job.id,
-      });
-    }
-
     // -------------------------------------------------------------------------
-    // Complete — mark checkpoint as done and delete from disk
+    // Complete the job FIRST — the report page depends only on this.
+    // Persistent-store saves and checkpoint cleanup below are best-effort and
+    // must NEVER be able to block or prevent the job from being marked done.
     // -------------------------------------------------------------------------
     store.updateStatus('validating');
     await new Promise((r) => setTimeout(r, 500));
 
-    checkpoint = checkpointAsDone(checkpoint);
-    await saveCheckpoint(checkpoint);  // write 'done' state first
-    await deleteCheckpoint(job.id);    // then clean up
-
     store.completeJob();
     log({ level: 'success', message: `Migration ${job.id} completed`, jobId: job.id });
+
+    // Best-effort: persist all mappings for future runs (wrapped — non-fatal)
+    if (migrationName) {
+      try {
+        const allMappings: Record<string, string> = {};
+        for (const [key, value] of mappingService.getMap()) {
+          allMappings[key] = value;
+        }
+        await savePersistentMappings(migrationName, source.baseUrl, target.baseUrl, allMappings);
+        log({
+          level: 'info',
+          message: `Saved ${Object.keys(allMappings).length} mappings to persistent store "${migrationName}"`,
+          jobId: job.id,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log({
+          level: 'warn',
+          message: `Could not save mappings to persistent store: ${msg}`,
+          jobId: job.id,
+        });
+      }
+    }
+
+    // Best-effort: write the 'done' marker then clean up the checkpoint file
+    try {
+      checkpoint = checkpointAsDone(checkpoint);
+      await saveCheckpoint(checkpoint);  // write 'done' state first
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log({
+        level: 'warn',
+        message: `Could not write done marker to checkpoint: ${msg} (migration data is unaffected)`,
+        jobId: job.id,
+      });
+    }
+
+    // Delete last — even if this hangs or fails, the job is already done.
+    try {
+      await deleteCheckpoint(job.id);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log({
+        level: 'warn',
+        message: `Could not delete checkpoint: ${msg} (leftover file is harmless)`,
+        jobId: job.id,
+      });
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     store.setError(msg);

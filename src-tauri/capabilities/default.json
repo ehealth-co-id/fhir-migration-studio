@@ -9,6 +9,11 @@
     "fs:allow-applocaldata-read-recursive",
     "fs:allow-applocaldata-write",
     "fs:allow-applocaldata-meta-recursive",
-    "fs:allow-mkdir"
+    "fs:allow-mkdir",
+    "fs:allow-remove",
+    {
+      "identifier": "fs:scope",
+      "allow": [{ "path": "$APPLOCALDATA/**" }]
+    }
   ]
 }

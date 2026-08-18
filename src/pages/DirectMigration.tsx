@@ -28,7 +28,7 @@ import { listIncompleteCheckpoints, deleteCheckpoint } from '../services/checkpo
 import { detectPatientMappings, type PatientDetectionResult } from '../services/patientDetector';
 import { savePersistentMappings, listMappingSets, deleteMappingSet, type PersistentMappingSummary } from '../services/persistentMappingStore';
 import { MIGRATABLE_RESOURCE_TYPES, type FhirResourceType } from '../types/fhir';
-import { computeOverallProgress, type CheckpointSummary } from '../types/migration';
+import { computeOverallProgress, type CheckpointSummary, type MigrationJob } from '../types/migration';
 import { generateReport, formatReportText } from '../services/reporter';
 
 type Step = 'configure' | 'running' | 'done';
@@ -46,6 +46,9 @@ export function DirectMigration() {
   const { rules } = useMappingStore();
 
   const [step, setStep] = useState<Step>('configure');
+  // Captured when handleStart resolves — drives the done page so it does not
+  // depend on the store surviving (e.g. HMR reloads in dev).
+  const [completedJob, setCompletedJob] = useState<MigrationJob | null>(null);
   const [selected, setSelected] = useState<Set<FhirResourceType>>(
     new Set(MIGRATABLE_RESOURCE_TYPES),
   );
@@ -77,12 +80,15 @@ export function DirectMigration() {
     if (job) {
       if (job.status === 'done' || job.status === 'error') {
         setStep('done');
+        // Capture locally so the done page survives store resets (e.g. HMR)
+        setCompletedJob((prev) => prev ?? job);
         // Refresh checkpoint list — completed migrations delete their checkpoint
         listIncompleteCheckpoints().then(setIncompleteCheckpoints).catch(() => {});
         // Refresh mapping sets — the migration may have saved new mappings
         listMappingSets().then(setMappingSets).catch(() => {});
       } else if (job.status === 'cancelled' || job.status === 'idle') {
         setStep('configure');
+        setCompletedJob(null);
         listIncompleteCheckpoints().then(setIncompleteCheckpoints).catch(() => {});
         listMappingSets().then(setMappingSets).catch(() => {});
       } else {
@@ -131,6 +137,9 @@ export function DirectMigration() {
         migrationName: migrationName.trim() || undefined,
       });
     } finally {
+      // Capture the finished job locally so the done page always renders,
+      // even if the store is reset by an HMR reload in dev.
+      setCompletedJob(useMigrationStore.getState().current);
       setRunning(false);
       setStep('done');
     }
@@ -186,6 +195,7 @@ export function DirectMigration() {
       await resumeDirectMigration(jobId, { source, target });
     } finally {
       setRunning(false);
+      setCompletedJob(useMigrationStore.getState().current);
       setStep('done');
     }
   }, [source, target]);
@@ -209,24 +219,28 @@ export function DirectMigration() {
 
   const handleCancel = () => {
     updateStatus('cancelled');
+    setCompletedJob(null);
     setStep('configure');
     setRunning(false);
   };
 
   const handleDownloadReport = () => {
-    if (!job) return;
-    const report = generateReport(job);
+    const reportJob = completedJob ?? job;
+    if (!reportJob) return;
+    const report = generateReport(reportJob);
     const text = formatReportText(report);
     const blob = new Blob([text], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `migration-report-${job.id}.txt`;
+    a.download = `migration-report-${reportJob.id}.txt`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
   const overallPct = job ? computeOverallProgress(job) : 0;
+  // The job shown on the done page — local capture preferred over store
+  const displayJob = completedJob ?? job;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 900 }}>
@@ -710,15 +724,15 @@ export function DirectMigration() {
       )}
 
       {/* Done step */}
-      {step === 'done' && job && (
+      {step === 'done' && displayJob && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <div className={`alert ${job.status === 'done' ? 'alert-success' : 'alert-error'}`}>
-            {job.status === 'done' ? <CheckCircle2 size={16} /> : <XCircle size={16} />}
+          <div className={`alert ${displayJob.status === 'done' ? 'alert-success' : 'alert-error'}`}>
+            {displayJob.status === 'done' ? <CheckCircle2 size={16} /> : <XCircle size={16} />}
             <div>
               <div style={{ fontWeight: 600 }}>
-                {job.status === 'done' ? 'Migration Completed Successfully' : 'Migration Failed'}
+                {displayJob.status === 'done' ? 'Migration Completed Successfully' : 'Migration Failed'}
               </div>
-              {job.error && <div style={{ fontSize: 12, marginTop: 2 }}>{job.error}</div>}
+              {displayJob.error && <div style={{ fontSize: 12, marginTop: 2 }}>{displayJob.error}</div>}
             </div>
           </div>
 
@@ -726,10 +740,10 @@ export function DirectMigration() {
           <Card title="Summary">
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
               {[
-                { label: 'Total', value: job.totals.total, color: 'var(--color-text)' },
-                { label: 'Uploaded', value: job.totals.uploaded, color: 'var(--color-success)' },
-                { label: 'Failed', value: job.totals.failed, color: job.totals.failed > 0 ? 'var(--color-error)' : 'var(--color-text-muted)' },
-                { label: 'Skipped', value: job.totals.skipped, color: 'var(--color-text-muted)' },
+                { label: 'Total', value: displayJob.totals.total, color: 'var(--color-text)' },
+                { label: 'Uploaded', value: displayJob.totals.uploaded, color: 'var(--color-success)' },
+                { label: 'Failed', value: displayJob.totals.failed, color: displayJob.totals.failed > 0 ? 'var(--color-error)' : 'var(--color-text-muted)' },
+                { label: 'Skipped', value: displayJob.totals.skipped, color: 'var(--color-text-muted)' },
               ].map((item) => (
                 <div key={item.label} style={{ textAlign: 'center' }}>
                   <div style={{ fontSize: 22, fontWeight: 700, color: item.color }}>{item.value.toLocaleString()}</div>
@@ -746,11 +760,11 @@ export function DirectMigration() {
             <Button variant="secondary" size="sm" onClick={() => navigate('/logs')}>
               View Logs
             </Button>
-            {job.status === 'error' && (
+            {displayJob.status === 'error' && (
               <Button
                 variant="primary"
                 size="sm"
-                onClick={() => handleResume(job.id)}
+                onClick={() => handleResume(displayJob.id)}
                 style={{ display: 'flex', alignItems: 'center', gap: 6 }}
               >
                 <RotateCcw size={14} />
@@ -758,9 +772,9 @@ export function DirectMigration() {
               </Button>
             )}
             <Button
-              variant={job.status === 'error' ? 'secondary' : 'primary'}
+              variant={displayJob.status === 'error' ? 'secondary' : 'primary'}
               size="sm"
-              onClick={() => { setStep('configure'); }}
+              onClick={() => { setCompletedJob(null); setStep('configure'); }}
             >
               New Migration
             </Button>
