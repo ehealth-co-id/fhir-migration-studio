@@ -42,7 +42,7 @@
  */
 
 import { downloadResourceType } from './downloader';
-import { buildResourceTypeBundle, splitPreparedEntries, splitBundleEntries } from './bundleBuilder';
+import { buildResourceTypeBundle, splitPreparedEntries, splitBundleEntries, extractInlineDataKeys } from './bundleBuilder';
 import type { PreparedEntry } from './bundleBuilder';
 import { rewriteResourceRefs } from './referenceRewriter';
 import { uploadSingleBundle } from './uploader';
@@ -389,20 +389,25 @@ async function uploadResourceTypeBatches(
   });
 
   // Use the shared bundle splitting algorithm.
-   // For Media resource type, upload one resource per bundle to avoid
-   // HAPI FHIR BinaryStorageEntity collision (EntityExistsException) when
-   // multiple Media resources share identical inline content.data within
-   // the same transaction.
-   const batches = resourceType === 'Media'
-     ? preparedEntries.map((entry) => ({
-         bundle: {
-           resourceType: 'Bundle' as const,
-           type: 'transaction' as const,
-           entry: [entry.entry],
-         },
-         originalRefs: entry.originalRef ? [entry.originalRef] : [],
-       }))
-     : splitPreparedEntries(preparedEntries);
+  // For Media resource type, upload one resource per bundle to avoid
+  // HAPI FHIR BinaryStorageEntity collision (EntityExistsException) when
+  // multiple Media resources share identical inline content.data within
+  // the same transaction.
+  //
+  // Other resource types (e.g. Patient with inline photo data) use the same
+  // binary-aware splitting: entries whose inline attachment data collides with
+  // an earlier entry in the same bundle are moved into a new bundle, avoiding
+  // the same HAPI-0389 EntityExistsException while keeping the normal batch size.
+  const batches = resourceType === 'Media'
+    ? preparedEntries.map((entry) => ({
+        bundle: {
+          resourceType: 'Bundle' as const,
+          type: 'transaction' as const,
+          entry: [entry.entry],
+        },
+        originalRefs: entry.originalRef ? [entry.originalRef] : [],
+      }))
+    : splitPreparedEntries(preparedEntries, extractInlineDataKeys);
 
   for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
     if (!(await checkStatus())) return checkpoint;
@@ -571,7 +576,9 @@ async function restorePatientLinks(
       jobId,
     });
   } else {
-    const batches = splitBundleEntries(entries);
+    // Pass extractInlineDataKeys so Patients sharing an identical inline photo
+    // are never PUT in the same transaction (HAPI-0389 BinaryStorageEntity).
+    const batches = splitBundleEntries(entries, extractInlineDataKeys);
     for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
       const patchBundle = batches[batchIndex];
       try {
@@ -692,7 +699,7 @@ async function restoreCompositionRelatesTo(
       jobId,
     });
   } else {
-    const batches = splitBundleEntries(entries);
+    const batches = splitBundleEntries(entries, extractInlineDataKeys);
     for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
       const patchBundle = batches[batchIndex];
       try {
@@ -816,7 +823,7 @@ async function restoreObservationRelated(
       jobId,
     });
   } else {
-    const batches = splitBundleEntries(entries);
+    const batches = splitBundleEntries(entries, extractInlineDataKeys);
     for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
       const patchBundle = batches[batchIndex];
       try {

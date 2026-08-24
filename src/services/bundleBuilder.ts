@@ -107,15 +107,69 @@ export interface PreparedEntry {
 }
 
 /**
- * Split prepared entries into transaction bundles using global settings limits.
+ * Extract all inline attachment data values (keys named "data") from a bundle
+ * entry's resource.
+ *
+ * Used to avoid HAPI FHIR BinaryStorageEntity collisions: when two resources in
+ * the same transaction bundle share identical inline binary content (e.g. the
+ * same Patient photo or Media content.data), HAPI tries to insert the same blob
+ * ID twice in one session and fails with EntityExistsException (HAPI-0389).
  */
-export function splitPreparedEntries(prepared: PreparedEntry[]): { bundle: Bundle; originalRefs: string[] }[] {
+export function extractInlineDataKeys(entry: PreparedEntry): string[] {
+  const keys: string[] = [];
+
+  const walk = (node: unknown): void => {
+    if (node === null || node === undefined) return;
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+    if (typeof node === 'object') {
+      for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+        if (key === 'data' && typeof value === 'string' && value.length > 0) {
+          keys.push(value);
+        } else {
+          walk(value);
+        }
+      }
+    }
+  };
+
+  walk(entry.entry.resource);
+  return keys;
+}
+
+/**
+ * Split prepared entries into transaction bundles using global settings limits.
+ *
+ * When a `getCollisionKeys` extractor is provided, entries whose keys collide
+ * with an earlier entry in the same bundle are moved into a new bundle. This
+ * prevents HAPI FHIR BinaryStorageEntity EntityExistsException when multiple
+ * resources in one transaction share identical inline binary content.
+ */
+export function splitPreparedEntries(
+  prepared: PreparedEntry[],
+  getCollisionKeys?: (entry: PreparedEntry) => string[],
+): { bundle: Bundle; originalRefs: string[] }[] {
   const settings = useSettingsStore.getState();
   const maxCount = settings.maxBundleResourceCount;
   const maxSize = settings.maxBundleRequestSizeMb * 1024 * 1024;
 
   const results: { bundle: Bundle; originalRefs: string[] }[] = [];
   let currentBatch: PreparedEntry[] = [];
+  let currentKeys = new Set<string>();
+
+  const finalizeBatch = (batch: PreparedEntry[]): void => {
+    if (batch.length === 0) return;
+    results.push({
+      bundle: {
+        resourceType: 'Bundle',
+        type: 'transaction',
+        entry: batch.map(x => x.entry),
+      },
+      originalRefs: batch.map(x => x.originalRef).filter((ref): ref is string => ref !== undefined),
+    });
+  };
 
   for (const item of prepared) {
     const candidateBatch = [...currentBatch, item];
@@ -126,40 +180,32 @@ export function splitPreparedEntries(prepared: PreparedEntry[]): { bundle: Bundl
     };
     const size = calculateSerializedSize(candidateBundle);
 
-    if (currentBatch.length > 0 && (size > maxSize || currentBatch.length >= maxCount)) {
-      results.push({
-        bundle: {
-          resourceType: 'Bundle',
-          type: 'transaction',
-          entry: currentBatch.map(x => x.entry),
-        },
-        originalRefs: currentBatch.map(x => x.originalRef).filter((ref): ref is string => ref !== undefined),
-      });
-      currentBatch = [item];
-    } else {
-      currentBatch = candidateBatch;
+    const itemKeys = getCollisionKeys?.(item) ?? [];
+    const collides =
+      currentBatch.length > 0 && itemKeys.some((key) => currentKeys.has(key));
+
+    if (currentBatch.length > 0 && (collides || size > maxSize || currentBatch.length >= maxCount)) {
+      finalizeBatch(currentBatch);
+      currentBatch = [];
+      currentKeys = new Set();
     }
+
+    currentBatch.push(item);
+    for (const key of itemKeys) currentKeys.add(key);
   }
 
-  if (currentBatch.length > 0) {
-    results.push({
-      bundle: {
-        resourceType: 'Bundle',
-        type: 'transaction',
-        entry: currentBatch.map(x => x.entry),
-      },
-      originalRefs: currentBatch.map(x => x.originalRef).filter((ref): ref is string => ref !== undefined),
-    });
-  }
-
+  finalizeBatch(currentBatch);
   return results;
 }
 
 /**
  * Split raw bundle entries into transaction bundles using global settings limits.
  */
-export function splitBundleEntries(entries: BundleEntry[]): Bundle[] {
-  return splitPreparedEntries(entries.map(entry => ({ entry }))).map(res => res.bundle);
+export function splitBundleEntries(
+  entries: BundleEntry[],
+  getCollisionKeys?: (entry: PreparedEntry) => string[],
+): Bundle[] {
+  return splitPreparedEntries(entries.map(entry => ({ entry })), getCollisionKeys).map(res => res.bundle);
 }
 
 /**

@@ -336,6 +336,24 @@ Then continue with Coverage.
 
 Do NOT mix different resource types inside the same Transaction Bundle.
 
+## Inline Binary Content (HAPI-0389)
+
+Resources with inline binary attachments (e.g. `Patient.photo[].data`, `Media.content.data`)
+are stored by HAPI FHIR as `BinaryStorageEntity` keyed by a content hash.
+
+If two resources inside the same Transaction Bundle share identical inline content,
+HAPI fails the whole bundle with:
+
+```
+HAPI-0389: EntityExistsException: A different object with the same identifier
+value was already associated with the session (BinaryStorageEntity)
+```
+
+The bundle splitter is therefore binary-aware: whenever an entry's inline attachment
+data collides with an earlier entry in the same bundle, the batch is split and the
+colliding entry starts a new bundle. The normal bundle size still applies when no
+collisions occur.
+
 ---
 
 # Resource Mapping
