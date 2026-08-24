@@ -46,6 +46,7 @@ import { buildResourceTypeBundle, splitPreparedEntries, splitBundleEntries, extr
 import type { PreparedEntry } from './bundleBuilder';
 import { rewriteResourceRefs } from './referenceRewriter';
 import { uploadSingleBundleWithFallback } from './uploader';
+import { fhirClient } from './fhirClient';
 import {
   saveCheckpoint,
   checkpointWithMappings,
@@ -61,7 +62,7 @@ import { useMigrationStore } from '../store/migrationStore';
 import type { ResourceMappingService } from './resourceMappingService';
 import type { MigrationCheckpoint } from '../types/migration';
 import type { ServerConfig } from '../types/server';
-import type { FhirResource, FhirResourceType } from '../types/fhir';
+import type { Bundle, FhirResource, FhirResourceType } from '../types/fhir';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -162,6 +163,27 @@ export async function runDependencyMigration(
       // Still need Observation resources for the related step — download but don't upload
       if (resourceType === 'Observation' && !checkpoint.observationRelatedPatched) {
         observationResources = await downloadAllResources(source, resourceType, jobId, undefined, dateFrom, dateTo);
+      }
+
+      // This type was fully uploaded in a previous run. If some of its ID
+      // mappings are missing (e.g. created through an early fallback path that
+      // did not surface server-assigned locations), recover them from the
+      // target by business identifier so dependent resources rewrite their
+      // references correctly instead of failing with HAPI-1094 "not found".
+      if (['Patient', 'Composition', 'Observation'].includes(resourceType)) {
+        const recoveryResources =
+          resourceType === 'Patient'
+            ? patientResources
+            : resourceType === 'Composition'
+              ? compositionResources
+              : observationResources;
+        if (recoveryResources.length > 0) {
+          await recoverMappingsByIdentifier(recoveryResources, resourceType, target, mappingService, jobId);
+          for (const r of recoveryResources) {
+            const newRef = r.id ? mappingService.get(`${resourceType}/${r.id}`) : undefined;
+            if (newRef) checkpoint.idMappings[`${resourceType}/${r.id}`] = newRef;
+          }
+        }
       }
 
       continue;
@@ -348,6 +370,101 @@ async function downloadAllResources(
   }, dateFrom, dateTo);
   void jobId; // used by caller for context; kept for future structured logging
   return resources;
+}
+
+/**
+ * Recover old→new ID mappings for resources that were already created on the
+ * target by a previous run whose response mappings were lost (e.g. uploads
+ * made through a fallback path that did not surface the server-assigned
+ * location).
+ *
+ * For each resource without a known mapping, its business identifiers are
+ * searched on the target server. A single match is recorded as the mapping so
+ * dependent resources rewrite their references to the EXISTING target resource
+ * instead of failing with "not found" or creating duplicates.
+ *
+ * Resources with no identifiers, ambiguous matches (>1), or lookup errors are
+ * skipped and reported via logs.
+ */
+async function recoverMappingsByIdentifier(
+  resources: FhirResource[],
+  resourceType: FhirResourceType,
+  target: ServerConfig,
+  mappingService: ResourceMappingService,
+  jobId: string,
+): Promise<void> {
+  const unmapped = resources.filter((r) => {
+    const id = r.id;
+    return id ? !mappingService.exists(resourceType, id) : false;
+  });
+  if (unmapped.length === 0) return;
+
+  log({
+    level: 'warn',
+    message:
+      `[Migration] ${unmapped.length}/${resources.length} ${resourceType} have no ID mapping on resume. ` +
+      'Recovering mappings from the target server by identifier...',
+    resourceType,
+    jobId,
+  });
+
+  let recovered = 0;
+  let missing = 0;
+
+  for (const resource of unmapped) {
+    if (!(resource.identifier ?? []).some((idt) => idt.system && idt.value)) {
+      missing++;
+      continue;
+    }
+
+    try {
+      // Search by every business identifier; HAPI treats multiple identifier
+      // params as AND. Any single hit identifies this resource uniquely.
+      const pairs = (resource.identifier ?? [])
+        .filter((idt): idt is { system: string; value: string } =>
+          Boolean(idt.system && idt.value),
+        )
+        .map((idt) => `identifier=${encodeURIComponent(idt.system)}%7C${encodeURIComponent(idt.value)}`);
+
+      const results = await fhirClient.get<Bundle>(
+        target,
+        `/${resourceType}?${pairs.join('&')}&_count=2`,
+      );
+      const matches = results.entry?.filter((e) => e.resource?.id).length ?? 0;
+
+      if (matches === 1 && resource.id) {
+        const newId = results.entry![0].resource!.id!;
+        mappingService.save(resourceType, resource.id, newId);
+        recovered++;
+      } else if (matches > 1) {
+        log({
+          level: 'warn',
+          message: `[Migration] ${resourceType} ${resource.id}: identifier matched ${matches} resources on target — skipping (ambiguous)`,
+          resourceType,
+          jobId,
+        });
+        missing++;
+      } else {
+        missing++;
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log({
+        level: 'error',
+        message: `[Migration] ${resourceType} ${resource.id}: mapping recovery lookup failed: ${msg}`,
+        resourceType,
+        jobId,
+      });
+      missing++;
+    }
+  }
+
+  log({
+    level: recovered > 0 ? 'success' : 'warn',
+    message: `[Migration] Mapping recovery done: ${recovered} recovered, ${missing} still unmapped`,
+    resourceType,
+    jobId,
+  });
 }
 
 /**

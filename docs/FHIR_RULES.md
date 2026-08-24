@@ -391,6 +391,15 @@ exists(resourceType, oldId)
 
 The mapping service must work for every resource type.
 
+Mapping loss recovery: if resources were already created on the target but their
+ID mappings were lost (e.g. uploaded through a fallback path that did not surface
+the server-assigned location), the migrator recovers the mappings on resume by
+searching the target with each resource's business identifiers. A single match is
+adopted as the mapping; ambiguous (>1) or missing matches are logged and skipped.
+Additionally, when an individual single-entry request fails, HAPI's per-entry
+outcome often still carries the assigned `location` — the uploader parses it and
+treats the entry as created so its mapping is registered.
+
 ---
 
 # Patient.link.other

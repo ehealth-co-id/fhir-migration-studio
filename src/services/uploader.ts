@@ -73,11 +73,36 @@ export function isServerBinaryUnsafe(config: ServerConfig): boolean {
 }
 
 /**
+ * Extract a "ResourceType/id" location from an error response body.
+ *
+ * When a transaction fails partway, HAPI reports entries it already processed
+ * as per-entry OperationOutcomes that still carry the assigned location
+ * (e.g. "location": "Patient/123/_history/1"). The per-entry fallback uses
+ * this to recover the real destination IDs so old→new ID mappings stay
+ * correct even when individual requests come back as errors.
+ */
+function extractLocationFromBody(body: string | undefined): string | undefined {
+  if (!body) return undefined;
+  try {
+    const parsed = JSON.parse(body) as { location?: unknown };
+    const loc = parsed.location;
+    if (typeof loc === 'string' && /[A-Z][a-zA-Z]+\/[^/\s]+/.test(loc)) {
+      return loc;
+    }
+  } catch {
+    // Body is not JSON — nothing to recover.
+  }
+  return undefined;
+}
+
+/**
  * Upload each entry of a bundle as its own single-entry transaction.
  *
  * Returns a synthetic transaction-response Bundle whose entry[] positions match
  * the input order, so positional response handling keeps working. Entries that
- * fail individually are reported with their error status.
+ * fail individually are reported with their error status — unless HAPI exposed
+ * the created resource's location in the error body, in which case a success
+ * status with the REAL location is emitted so mappings can be registered.
  *
  * Retries up to MAX_RETRIES times on transient errors (5xx).
  */
@@ -102,6 +127,18 @@ async function uploadEntriesIndividually(
         response: { status: '201 Created' },
       });
     } catch (err) {
+      // HAPI often includes the assigned location in the per-entry outcome of
+      // a failed request — the resource itself WAS created. Surface it so the
+      // caller registers the real old→new ID mapping instead of losing it.
+      const location =
+        err instanceof FhirClientError ? extractLocationFromBody(err.body) : undefined;
+      if (location) {
+        responseEntries.push({
+          fullUrl: entry.fullUrl,
+          response: { status: '201 Created', location },
+        });
+        continue;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       log({
         level: 'error',
