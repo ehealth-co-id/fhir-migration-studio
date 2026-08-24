@@ -354,6 +354,13 @@ data collides with an earlier entry in the same bundle, the batch is split and t
 colliding entry starts a new bundle. The normal bundle size still applies when no
 collisions occur.
 
+This protection applies to every upload path (dependency migration, Patient.link
+restore PUT bundles, and NDJSON import).
+
+As a safety net, the uploader detects HAPI-0389 BinaryStorageEntity failures and
+automatically retries the failed bundle as single-entry transactions, so one
+collision can never drop resources from the migration.
+
 ---
 
 # Resource Mapping

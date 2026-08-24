@@ -1,12 +1,18 @@
 /**
  * Uploader — POSTs Transaction Bundles to the target server.
  * Includes retry logic with exponential backoff.
+ *
+ * HAPI-0389 safety net:
+ * If a transaction bundle fails with a BinaryStorageEntity EntityExistsException
+ * (two entries sharing identical inline binary content in one transaction — see
+ * docs/FHIR_RULES.md §Inline Binary Content), the bundle is automatically retried
+ * as single-entry transactions so no resource is lost from the migration.
  */
 
 import { fhirClient, FhirClientError } from './fhirClient';
 import { log } from '../store/logStore';
 import type { ServerConfig } from '../types/server';
-import type { Bundle } from '../types/fhir';
+import type { Bundle, BundleEntry } from '../types/fhir';
 import type { FhirResourceType } from '../types/fhir';
 
 const MAX_RETRIES = 3;
@@ -21,6 +27,59 @@ export interface UploadResult {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Detect a HAPI-0389 BinaryStorageEntity EntityExistsException in an error.
+ */
+export function isBinaryStorageCollisionError(err: unknown): boolean {
+  if (!(err instanceof FhirClientError)) return false;
+  return (err.body ?? '').includes('BinaryStorageEntity');
+}
+
+/**
+ * Upload each entry of a bundle as its own single-entry transaction.
+ *
+ * Returns a synthetic transaction-response Bundle whose entry[] positions match
+ * the input order, so positional response handling keeps working. Entries that
+ * fail individually are reported with their error status.
+ *
+ * Retries up to MAX_RETRIES times on transient errors (5xx).
+ */
+async function uploadEntriesIndividually(
+  config: ServerConfig,
+  bundle: Bundle,
+): Promise<Bundle> {
+  const entries = bundle.entry ?? [];
+  const responseEntries: BundleEntry[] = [];
+
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    const single: Bundle = {
+      resourceType: 'Bundle',
+      type: 'transaction',
+      entry: [entry],
+    };
+    try {
+      await uploadSingleBundle(config, single);
+      responseEntries.push({
+        fullUrl: entry.fullUrl,
+        response: { status: '201 Created' },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log({
+        level: 'error',
+        message: `Single-resource retry ${i + 1}/${entries.length} failed: ${msg}`,
+      });
+      responseEntries.push({
+        fullUrl: entry.fullUrl,
+        response: { status: '500 Error' },
+      });
+    }
+  }
+
+  return { resourceType: 'Bundle', type: 'transaction-response', entry: responseEntries };
 }
 
 /**
@@ -49,6 +108,27 @@ export async function uploadSingleBundle(
     }
 
     throw err;
+  }
+}
+
+/**
+ * Upload a bundle, falling back to per-entry transactions when the server
+ * rejects the whole bundle with a BinaryStorageEntity collision (HAPI-0389).
+ */
+export async function uploadSingleBundleWithFallback(
+  config: ServerConfig,
+  bundle: Bundle,
+): Promise<Bundle> {
+  try {
+    return await uploadSingleBundle(config, bundle);
+  } catch (err) {
+    if (!isBinaryStorageCollisionError(err)) throw err;
+    const size = bundle.entry?.length ?? 0;
+    log({
+      level: 'warn',
+      message: `HAPI-0389 binary storage collision detected — retrying ${size} resource(s) individually...`,
+    });
+    return uploadEntriesIndividually(config, bundle);
   }
 }
 
@@ -103,7 +183,7 @@ export async function uploadBundles(
         resourceType,
       });
 
-      const responseBundle = await uploadSingleBundle(config, bundle);
+      const responseBundle = await uploadSingleBundleWithFallback(config, bundle);
       const { success, failed, errors } = parseResponse(responseBundle);
 
       aggregate.success += success;

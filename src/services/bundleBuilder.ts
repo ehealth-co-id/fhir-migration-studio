@@ -200,6 +200,10 @@ export function splitPreparedEntries(
 
 /**
  * Split raw bundle entries into transaction bundles using global settings limits.
+ *
+ * When `getCollisionKeys` is provided (e.g. extractInlineDataKeys), entries whose
+ * keys collide with an earlier entry in the same bundle are moved into a new
+ * bundle — same protection as splitPreparedEntries.
  */
 export function splitBundleEntries(
   entries: BundleEntry[],
@@ -210,12 +214,18 @@ export function splitBundleEntries(
 
 /**
  * Split a large list of resources into multiple Transaction Bundles.
+ *
+ * When `getCollisionKeys` is provided (e.g. extractInlineDataKeys), resources
+ * sharing identical inline binary content are never placed in the same
+ * transaction bundle (prevents HAPI-0389 BinaryStorageEntity
+ * EntityExistsException).
  */
 export function buildTransactionBundles(
   resources: FhirResource[],
+  getCollisionKeys?: (entry: PreparedEntry) => string[],
 ): Bundle[] {
   const bundle = buildTransactionBundle(resources);
-  return splitBundleEntries(bundle.entry ?? []);
+  return splitBundleEntries(bundle.entry ?? [], getCollisionKeys);
 }
 
 // ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@ import type { FhirResource, FhirResourceType } from '../types/fhir';
 import type { ServerConfig } from '../types/server';
 import type { MappingRule } from '../types/mapping';
 import { rewriteReferences } from '../services/mapper';
-import { buildTransactionBundles } from '../services/bundleBuilder';
+import { buildTransactionBundles, extractInlineDataKeys } from '../services/bundleBuilder';
 import { uploadBundles } from '../services/uploader';
 import { log } from './logStore';
 
@@ -96,7 +96,10 @@ export const useImportStore = create<ImportState>()((set, get) => ({
       for (const [rt, resources] of byType.entries()) {
         if (get().isCancelled) break;
 
-        const bundles = buildTransactionBundles(resources);
+        // Pass extractInlineDataKeys so resources sharing identical inline
+        // binary content (e.g. Patient photo data) are never placed in the
+        // same transaction bundle (HAPI-0389 BinaryStorageEntity collision).
+        const bundles = buildTransactionBundles(resources, extractInlineDataKeys);
         
         await uploadBundles(
           target,
