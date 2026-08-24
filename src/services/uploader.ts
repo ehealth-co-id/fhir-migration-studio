@@ -121,10 +121,18 @@ async function uploadEntriesIndividually(
       entry: [entry],
     };
     try {
-      await uploadSingleBundle(config, single);
+      // A single-entry transaction response carries the real destination
+      // location in entry[0].response.location. Surface it so the caller
+      // registers the old→new ID mapping — without this, references to this
+      // resource stay as raw source IDs and the target rejects them with
+      // HAPI-1094 "not found".
+      const resp = await uploadSingleBundle(config, single);
+      const location = resp.entry?.[0]?.response?.location;
       responseEntries.push({
         fullUrl: entry.fullUrl,
-        response: { status: '201 Created' },
+        response: location
+          ? { status: '201 Created', location }
+          : { status: '201 Created' },
       });
     } catch (err) {
       // HAPI often includes the assigned location in the per-entry outcome of
