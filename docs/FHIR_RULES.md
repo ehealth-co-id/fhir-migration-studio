@@ -357,9 +357,19 @@ collisions occur.
 This protection applies to every upload path (dependency migration, Patient.link
 restore PUT bundles, and NDJSON import).
 
-As a safety net, the uploader detects HAPI-0389 BinaryStorageEntity failures and
-automatically retries the failed bundle as single-entry transactions, so one
-collision can never drop resources from the migration.
+Known server-side defect (HAPI <= 6.x): `BinaryStorageInterceptor` keeps deferred
+blob targets in TransactionDetails-scoped state and re-stores every previously
+deferred blob once per additional resource committed in the same transaction.
+Any transaction containing >= 2 resources with inline binary data therefore fails
+with HAPI-0389 even when the contents are completely different. Verified against
+HAPI FHIR Server 6.4.4 (DSTU3) tenant servers; fixed upstream when the deferred
+list moved to per-resource userData.
+
+As a safety net, the uploader detects HAPI-0389 BinaryStorageEntity failures,
+marks that target server as binary-unsafe for the app session, retries the failed
+bundle as single-entry transactions, and sends all remaining bundles
+single-entry. Single-entry transactions are always safe (the deferred list holds
+at most one entry), so one collision can never drop resources from the migration.
 
 ---
 

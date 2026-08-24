@@ -45,7 +45,7 @@ import { downloadResourceType } from './downloader';
 import { buildResourceTypeBundle, splitPreparedEntries, splitBundleEntries, extractInlineDataKeys } from './bundleBuilder';
 import type { PreparedEntry } from './bundleBuilder';
 import { rewriteResourceRefs } from './referenceRewriter';
-import { uploadSingleBundle } from './uploader';
+import { uploadSingleBundleWithFallback } from './uploader';
 import {
   saveCheckpoint,
   checkpointWithMappings,
@@ -423,7 +423,12 @@ async function uploadResourceTypeBatches(
     });
 
     try {
-      const responseBundle = await uploadSingleBundle(target, bundle);
+      // uploadSingleBundleWithFallback transparently falls back to single-entry
+      // transactions on servers with the HAPI-0389 deferred-blob defect (old
+      // HAPI fails ANY transaction containing >= 2 resources with inline
+      // binary data), returning a positional transaction-response so mapping
+      // registration below keeps working.
+      const responseBundle = await uploadSingleBundleWithFallback(target, bundle);
       const entries = responseBundle.entry ?? [];
 
       // Register new server-assigned IDs in memory
@@ -533,7 +538,6 @@ async function restorePatientLinks(
 
   useMigrationStore.getState().updateStatus('patching');
 
-  const { fhirClient } = await import('./fhirClient');
   const { generateUrn } = await import('./bundleBuilder');
 
   const MIGRATION_MARKER = {
@@ -582,7 +586,7 @@ async function restorePatientLinks(
     for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
       const patchBundle = batches[batchIndex];
       try {
-        await fhirClient.post(target, '/', patchBundle);
+        await uploadSingleBundleWithFallback(target, patchBundle);
         log({
           level: 'success',
           message: `[Migration] Restored link.other for batch ${batchIndex + 1} (${patchBundle.entry?.length ?? 0} Patients)`,
@@ -656,7 +660,6 @@ async function restoreCompositionRelatesTo(
 
   useMigrationStore.getState().updateStatus('patching');
 
-  const { fhirClient } = await import('./fhirClient');
   const { generateUrn } = await import('./bundleBuilder');
 
   const MIGRATION_MARKER = {
@@ -703,7 +706,7 @@ async function restoreCompositionRelatesTo(
     for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
       const patchBundle = batches[batchIndex];
       try {
-        await fhirClient.post(target, '/', patchBundle);
+        await uploadSingleBundleWithFallback(target, patchBundle);
         log({
           level: 'success',
           message: `[Migration] Restored relatesTo for batch ${batchIndex + 1} (${patchBundle.entry?.length ?? 0} Compositions)`,
@@ -780,7 +783,6 @@ async function restoreObservationRelated(
 
   useMigrationStore.getState().updateStatus('patching');
 
-  const { fhirClient } = await import('./fhirClient');
   const { generateUrn } = await import('./bundleBuilder');
 
   const MIGRATION_MARKER = {
@@ -827,7 +829,7 @@ async function restoreObservationRelated(
     for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
       const patchBundle = batches[batchIndex];
       try {
-        await fhirClient.post(target, '/', patchBundle);
+        await uploadSingleBundleWithFallback(target, patchBundle);
         log({
           level: 'success',
           message: `[Migration] Restored related for batch ${batchIndex + 1} (${patchBundle.entry?.length ?? 0} Observations)`,

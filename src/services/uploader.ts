@@ -37,6 +37,41 @@ export function isBinaryStorageCollisionError(err: unknown): boolean {
   return (err.body ?? '').includes('BinaryStorageEntity');
 }
 
+// ---------------------------------------------------------------------------
+// Binary-unsafe servers (HAPI <= 6.x deferred-blob defect)
+// ---------------------------------------------------------------------------
+//
+// On older HAPI JPA servers (verified against 6.4.4), BinaryStorageInterceptor
+// keeps deferred blob targets in TransactionDetails-scoped state and re-stores
+// EVERY previously deferred blob once per additional resource committed in the
+// same transaction (DatabaseBlobBinaryStorageSvcImpl.storeBlob uses persist()).
+// Result: any transaction containing >= 2 resources with inline binary data
+// fails with HAPI-0389 EntityExistsException — regardless of whether the
+// contents are identical.
+//
+// Single-entry transactions are always safe: the deferred list then holds at
+// most one entry, which is stored exactly once.
+//
+// Once a server exhibits the defect we remember it (per base URL, for the app
+// session) and send all further bundles as single-entry transactions without
+// another failing round-trip.
+
+const binaryUnsafeServers = new Set<string>();
+
+function serverKey(config: ServerConfig): string {
+  return config.baseUrl.trim().toLowerCase();
+}
+
+/** Mark a target server as exhibiting the HAPI-0389 multi-binary defect. */
+export function markServerBinaryUnsafe(config: ServerConfig): void {
+  binaryUnsafeServers.add(serverKey(config));
+}
+
+/** Whether this target server is known to fail multi-binary transactions. */
+export function isServerBinaryUnsafe(config: ServerConfig): boolean {
+  return binaryUnsafeServers.has(serverKey(config));
+}
+
 /**
  * Upload each entry of a bundle as its own single-entry transaction.
  *
@@ -112,21 +147,26 @@ export async function uploadSingleBundle(
 }
 
 /**
- * Upload a bundle, falling back to per-entry transactions when the server
- * rejects the whole bundle with a BinaryStorageEntity collision (HAPI-0389).
+ * Upload a bundle, falling back to per-entry transactions when the target
+ * server rejects multi-resource bundles with a BinaryStorageEntity collision
+ * (HAPI-0389 — see the binary-unsafe servers note above).
  */
 export async function uploadSingleBundleWithFallback(
   config: ServerConfig,
   bundle: Bundle,
 ): Promise<Bundle> {
+  if (isServerBinaryUnsafe(config)) {
+    return uploadEntriesIndividually(config, bundle);
+  }
   try {
     return await uploadSingleBundle(config, bundle);
   } catch (err) {
     if (!isBinaryStorageCollisionError(err)) throw err;
+    markServerBinaryUnsafe(config);
     const size = bundle.entry?.length ?? 0;
     log({
       level: 'warn',
-      message: `HAPI-0389 binary storage collision detected — retrying ${size} resource(s) individually...`,
+      message: `HAPI-0389 detected on ${config.baseUrl} — this server fails transactions with multiple inline binaries (old HAPI deferred-blob defect). Retrying ${size} resource(s) individually; remaining bundles will be sent single-entry.`,
     });
     return uploadEntriesIndividually(config, bundle);
   }
