@@ -396,6 +396,9 @@ ID mappings were lost (e.g. uploaded through a fallback path that did not surfac
 the server-assigned location), the migrator recovers the mappings on resume by
 searching the target with each resource's business identifiers. A single match is
 adopted as the mapping; ambiguous (>1) or missing matches are logged and skipped.
+Recovered mappings are persisted to the persistent mapping store (when a
+migration name is set) and, on resume, resources already present on the target
+are skipped so they are never re-uploaded (no duplicates).
 Additionally, when an individual single-entry request fails, HAPI's per-entry
 outcome often still carries the assigned `location` — the uploader parses it and
 treats the entry as created so its mapping is registered.

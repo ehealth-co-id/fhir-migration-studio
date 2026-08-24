@@ -56,6 +56,7 @@ import {
   checkpointWithObservationRelatedPatched,
   isResourceTypeComplete,
 } from './checkpointService';
+import { savePersistentMappings } from './persistentMappingStore';
 import { DEPENDENCY_ORDER, sortByDependencyOrder } from './dependencyGraph';
 import { log } from '../store/logStore';
 import { useMigrationStore } from '../store/migrationStore';
@@ -94,6 +95,8 @@ export interface DependencyMigratorOptions {
   dateFrom?: string;
   /** Optional end date for _lastUpdated range (inclusive, ISO date string). */
   dateTo?: string;
+  /** User-provided migration name — used to persist recovered mappings. */
+  migrationName?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +127,7 @@ export async function runDependencyMigration(
     selectedResourceTypes,
     dateFrom,
     dateTo,
+    migrationName,
   } = options;
 
   // Sort selected types by dependency order
@@ -171,17 +175,28 @@ export async function runDependencyMigration(
       // target by business identifier so dependent resources rewrite their
       // references correctly instead of failing with HAPI-1094 "not found".
       if (['Patient', 'Composition', 'Observation'].includes(resourceType)) {
-        const recoveryResources =
-          resourceType === 'Patient'
-            ? patientResources
-            : resourceType === 'Composition'
-              ? compositionResources
-              : observationResources;
+        // Always download the full list for recovery — do NOT gate on
+        // patientLinkPatched. Those resources may already exist on the target
+        // from an earlier run (Stage 2 patched) but their ID mappings could be
+        // missing, and recovery still needs the source list to search by ID.
+        const recoveryResources = await downloadAllResources(source, resourceType, jobId, undefined, dateFrom, dateTo);
         if (recoveryResources.length > 0) {
           await recoverMappingsByIdentifier(recoveryResources, resourceType, target, mappingService, jobId);
           for (const r of recoveryResources) {
             const newRef = r.id ? mappingService.get(`${resourceType}/${r.id}`) : undefined;
             if (newRef) checkpoint.idMappings[`${resourceType}/${r.id}`] = newRef;
+          }
+          // Persist recovered mappings so even a brand-new run (no checkpoint)
+          // loads them and rewrites references correctly.
+          if (migrationName) {
+            const recoveredMap: Record<string, string> = {};
+            for (const r of recoveryResources) {
+              const newRef = r.id ? mappingService.get(`${resourceType}/${r.id}`) : undefined;
+              if (newRef) recoveredMap[`${resourceType}/${r.id}`] = newRef;
+            }
+            if (Object.keys(recoveredMap).length > 0) {
+              await savePersistentMappings(migrationName, source.baseUrl, target.baseUrl, recoveredMap);
+            }
           }
         }
       }
@@ -210,11 +225,36 @@ export async function runDependencyMigration(
       jobId,
     });
 
+    // Before uploading, recover ID mappings for resources that may already
+    // exist on the target from a previous run (uploaded through an early
+    // fallback that did not surface locations). This heals the case where
+    // patients landed but their mappings were lost, so dependents rewrite
+    // references correctly. If the resources are NOT yet on the target the
+    // lookup finds nothing and upload proceeds normally (no duplication).
+    if (['Patient', 'Composition', 'Observation'].includes(resourceType)) {
+      await recoverMappingsByIdentifier(resources, resourceType, target, mappingService, jobId);
+      for (const r of resources) {
+        const newRef = r.id ? mappingService.get(`${resourceType}/${r.id}`) : undefined;
+        if (newRef) checkpoint.idMappings[`${resourceType}/${r.id}`] = newRef;
+      }
+      if (migrationName) {
+        const recoveredMap: Record<string, string> = {};
+        for (const r of resources) {
+          const newRef = r.id ? mappingService.get(`${resourceType}/${r.id}`) : undefined;
+          if (newRef) recoveredMap[`${resourceType}/${r.id}`] = newRef;
+        }
+        if (Object.keys(recoveredMap).length > 0) {
+          await savePersistentMappings(migrationName, source.baseUrl, target.baseUrl, recoveredMap);
+        }
+      }
+    }
+
     if (resourceType === 'Patient') {
       // Stage 1: Upload Patients WITHOUT link.other
       patientResources = resources;
+      const toUpload = resources.filter((r) => (r.id ? !mappingService.exists(resourceType, r.id) : true));
       checkpoint = await uploadResourceTypeBatches(
-        resources,
+        toUpload,
         resourceType,
         bundleSize,
         target,
@@ -228,8 +268,9 @@ export async function runDependencyMigration(
     } else if (resourceType === 'Composition') {
       // Stage 1: Upload Compositions WITHOUT relatesTo
       compositionResources = resources;
+      const toUpload = resources.filter((r) => (r.id ? !mappingService.exists(resourceType, r.id) : true));
       checkpoint = await uploadResourceTypeBatches(
-        resources,
+        toUpload,
         resourceType,
         bundleSize,
         target,
@@ -245,8 +286,9 @@ export async function runDependencyMigration(
       // Observation.related.target may reference another Observation whose
       // destination ID is not known yet, so related is restored in Stage 2.
       observationResources = resources;
+      const toUpload = resources.filter((r) => (r.id ? !mappingService.exists(resourceType, r.id) : true));
       checkpoint = await uploadResourceTypeBatches(
-        resources,
+        toUpload,
         resourceType,
         bundleSize,
         target,

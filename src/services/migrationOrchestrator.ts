@@ -313,7 +313,7 @@ async function _runMigration(args: RunMigrationArgs): Promise<void> {
     });
 
     checkpoint = await runDependencyMigration(
-      { source, target, bundleSize, jobId: job.id, selectedResourceTypes, dateFrom, dateTo },
+      { source, target, bundleSize, jobId: job.id, selectedResourceTypes, dateFrom, dateTo, migrationName },
       mappingService,
       checkpoint,
       onCheckpoint,
