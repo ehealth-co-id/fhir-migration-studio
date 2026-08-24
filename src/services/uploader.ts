@@ -73,6 +73,39 @@ export function isServerBinaryUnsafe(config: ServerConfig): boolean {
 }
 
 /**
+ * Count how many entries in a bundle carry inline binary data (a non-empty
+ * `data` field anywhere in the resource). Single-entry fallback is only needed
+ * when a transaction would contain >= 2 such entries — the HAPI 6.x defect
+ * triggers on ANY transaction with two or more binary-bearing resources, but
+ * bundles with 0 or 1 binary entry are safe to send as a normal batch.
+ */
+function countBinaryEntries(bundle: Bundle): number {
+  let count = 0;
+  const walk = (node: unknown): boolean => {
+    if (node === null || node === undefined) return false;
+    if (Array.isArray(node)) {
+      for (const item of node) if (walk(item)) return true;
+      return false;
+    }
+    if (typeof node === 'object') {
+      for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+        if (key === 'data' && typeof value === 'string' && value.length > 0) {
+          return true;
+        }
+        if (walk(value)) return true;
+      }
+      return false;
+    }
+    return false;
+  };
+
+  for (const entry of bundle.entry ?? []) {
+    if (walk(entry.resource)) count++;
+  }
+  return count;
+}
+
+/**
  * Extract a "ResourceType/id" location from an error response body.
  *
  * When a transaction fails partway, HAPI reports entries it already processed
@@ -195,12 +228,19 @@ export async function uploadSingleBundle(
  * Upload a bundle, falling back to per-entry transactions when the target
  * server rejects multi-resource bundles with a BinaryStorageEntity collision
  * (HAPI-0389 — see the binary-unsafe servers note above).
+ *
+ * The HAPI 6.x deferred-blob defect only affects bundles containing >= 2
+ * entries with inline binary data. Bundles with 0 or 1 such entry are safe to
+ * send as a normal batch, so even on a binary-unsafe server we only fall back
+ * to single-entry when the bundle actually needs it (avoids needlessly
+ * slowing down pure/near-pure non-binary types like Appointment, Condition...).
  */
 export async function uploadSingleBundleWithFallback(
   config: ServerConfig,
   bundle: Bundle,
 ): Promise<Bundle> {
-  if (isServerBinaryUnsafe(config)) {
+  const binaryCount = countBinaryEntries(bundle);
+  if (isServerBinaryUnsafe(config) && binaryCount >= 2) {
     return uploadEntriesIndividually(config, bundle);
   }
   try {
@@ -211,7 +251,7 @@ export async function uploadSingleBundleWithFallback(
     const size = bundle.entry?.length ?? 0;
     log({
       level: 'warn',
-      message: `HAPI-0389 detected on ${config.baseUrl} — this server fails transactions with multiple inline binaries (old HAPI deferred-blob defect). Retrying ${size} resource(s) individually; remaining bundles will be sent single-entry.`,
+      message: `HAPI-0389 detected on ${config.baseUrl} — this server fails transactions with multiple inline binaries (old HAPI deferred-blob defect). Retrying ${size} resource(s) individually; subsequent bundles with >=2 inline binaries will be sent single-entry.`,
     });
     return uploadEntriesIndividually(config, bundle);
   }
